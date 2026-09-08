@@ -16,6 +16,7 @@ import { saveSessionState, extractSessionStateFromTranscript, findTranscriptPath
 import { readConfig } from '../config.js'
 import { loadCalibration } from '../features/calibration.js'
 import { readStdin, outputDecision, writeJsonFileAtomic, readJsonFile } from './shared.js'
+import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from '../features/cost-tracker.js'
 
 /**
  * PostToolUse hook handler.
@@ -510,7 +511,7 @@ async function checkSessionHealth(sessionId: string): Promise<HookDecision | nul
     // SESSION ROTATION — check waste factor.
     // If waste is 10x+, BLOCK the tool result. Claude must stop.
     // This works during autonomous operation when UserPromptSubmit doesn't fire.
-    const rotationBlock = checkSessionRotationBlock(sessionId, turns)
+    const rotationBlock = checkSessionRotationBlock(sessionId, turns, extractModel(records))
     if (rotationBlock) {
       return rotationBlock
     }
@@ -624,7 +625,11 @@ function checkSkillNudge(sessionId: string, toolName: string): string | null {
  * Uses decision: "block" to stop Claude after a tool call.
  * Same waste factor logic, but blocks the tool result.
  */
-function checkSessionRotationBlock(sessionId: string, turns: TurnMetrics[]): HookDecision | null {
+function checkSessionRotationBlock(
+  sessionId: string,
+  turns: TurnMetrics[],
+  model: string | null
+): HookDecision | null {
   const config = readConfig()
   if (!config.rotation.enabled) return null
 
@@ -634,14 +639,19 @@ function checkSessionRotationBlock(sessionId: string, turns: TurnMetrics[]): Hoo
 
   if (turns.length < cal.minTurns) return null
 
-  // Calculate waste factor first, then check if we should re-block
-  const turnTokens = turns.map((t) =>
-    t.usage.input_tokens + t.usage.output_tokens +
-    t.usage.cache_creation_input_tokens + t.usage.cache_read_input_tokens
-  )
-  const baseline = turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / Math.min(5, turnTokens.length)
-  const current = turnTokens.slice(-5).reduce((a, b) => a + b, 0) / Math.min(5, turnTokens.length)
-  const wasteFactor = baseline > 0 ? Math.round(current / baseline) : 1
+  // Waste is a COST ratio, not a token ratio - see cost-tracker.effectiveTurnCost.
+  // This was the fourth copy of this calculation and the last one still summing
+  // token classes at face value, which is why it kept reporting several times
+  // the real figure after the others were corrected.
+  const pricing = model ? getPricingForModel(model) : undefined
+  const turnTokens = turns.map((t) => rawTurnTokens(t.usage))
+  const turnCosts = turns.map((t) => effectiveTurnCost(t.usage, pricing))
+  const n = Math.min(5, turnTokens.length)
+  const baseline = turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / n
+  const current = turnTokens.slice(-5).reduce((a, b) => a + b, 0) / n
+  const baselineCost = turnCosts.slice(0, 5).reduce((a, b) => a + b, 0) / n
+  const currentCost = turnCosts.slice(-5).reduce((a, b) => a + b, 0) / n
+  const wasteFactor = baselineCost > 0 ? Math.round(currentCost / baselineCost) : 1
 
   if (wasteFactor < cal.wasteThreshold) return null
 
