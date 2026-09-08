@@ -852,7 +852,34 @@ program
       totalUsage.cache_creation_input_tokens +
       totalUsage.cache_read_input_tokens
 
-    const cost = estimateCost(totalUsage)
+    // Price each session with its own model, then sum. Costing the aggregate
+    // with a single default silently repriced every session as whatever the
+    // fallback happened to be.
+    const cost = recentSessions
+      .map((s) =>
+        estimateCost(
+          s.totalUsage,
+          s.model ? getPricingForModel(s.model) : undefined
+        )
+      )
+      .reduce(
+        (acc, c) => ({
+          inputCost: acc.inputCost + c.inputCost,
+          outputCost: acc.outputCost + c.outputCost,
+          cacheCreationCost: acc.cacheCreationCost + c.cacheCreationCost,
+          cacheReadCost: acc.cacheReadCost + c.cacheReadCost,
+          totalCost: acc.totalCost + c.totalCost,
+          savedVsUncached: acc.savedVsUncached + c.savedVsUncached,
+        }),
+        {
+          inputCost: 0,
+          outputCost: 0,
+          cacheCreationCost: 0,
+          cacheReadCost: 0,
+          totalCost: 0,
+          savedVsUncached: 0,
+        }
+      )
 
     const cacheRatio =
       totalUsage.cache_read_input_tokens /
