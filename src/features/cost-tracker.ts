@@ -22,18 +22,25 @@ export function estimateCost(
   const inputCost = (usage.input_tokens / 1_000_000) * p.inputPerMillion
   const outputCost = (usage.output_tokens / 1_000_000) * p.outputPerMillion
   // Cache writes are billed by TTL: 1.25x base for 5 minutes, 2x for 1 hour.
-  // Claude Code writes at the 1-hour TTL, so when the breakdown is missing we
-  // assume 1h rather than the cheaper rate - guessing low here hid ~2.7x of
-  // the write line.
-  const write5m = usage.cache_creation?.ephemeral_5m_input_tokens
-  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens
-  const hasBreakdown = write5m !== undefined || write1h !== undefined
-  const cacheCreationCost = hasBreakdown
-    ? ((write5m ?? 0) / 1_000_000) * p.cacheCreationPerMillion +
-      ((write1h ?? 0) / 1_000_000) * p.cacheCreation1hPerMillion
-    : (usage.cache_creation_input_tokens / 1_000_000) * p.cacheCreation1hPerMillion
+  // Claude Code writes at the 1-hour TTL.
+  //
+  // The breakdown is treated as a hint, never as the total. An aggregate that
+  // seeds {5m: 0, 1h: 0} and never populates it would otherwise price every
+  // write at zero, and a partial breakdown would under-bill the remainder.
+  // Whatever the split does not account for is billed at the 1h rate, because
+  // guessing low here is precisely what hid this cost line before.
+  const write5m = usage.cache_creation?.ephemeral_5m_input_tokens ?? 0
+  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0
+  const unattributed = Math.max(
+    0,
+    usage.cache_creation_input_tokens - write5m - write1h
+  )
+  const cacheCreationCost =
+    (write5m / 1_000_000) * p.cacheCreationPerMillion +
+    ((write1h + unattributed) / 1_000_000) * p.cacheCreation1hPerMillion
   const cacheReadCost =
     (usage.cache_read_input_tokens / 1_000_000) * p.cacheReadPerMillion
+
   const totalCost = inputCost + outputCost + cacheCreationCost + cacheReadCost
 
   // What it would have cost if all cache tokens were regular input

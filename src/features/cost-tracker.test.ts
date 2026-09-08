@@ -62,6 +62,29 @@ describe('estimateCost cache TTL handling', () => {
     expect(estimateCost(usage, opus5).cacheCreationCost).toBeCloseTo(16.25)
   })
 
+  it('bills the remainder at 1h when the breakdown is zeroed or partial', () => {
+    // An aggregate that seeds {5m: 0, 1h: 0} and never fills it must not
+    // price every write at zero.
+    const zeroed: TokenUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 1_000_000,
+      cache_read_input_tokens: 0,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 0,
+        ephemeral_1h_input_tokens: 0,
+      },
+    }
+    expect(estimateCost(zeroed, opus5).cacheCreationCost).toBeCloseTo(10.0)
+
+    const partial: TokenUsage = {
+      ...zeroed,
+      cache_creation: { ephemeral_5m_input_tokens: 400_000 },
+    }
+    // 400k at $6.25 + 600k unattributed at $10.00
+    expect(estimateCost(partial, opus5).cacheCreationCost).toBeCloseTo(8.5)
+  })
+
   it('assumes the 1h rate when no breakdown is present', () => {
     const usage: TokenUsage = {
       input_tokens: 0,

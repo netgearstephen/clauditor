@@ -54,8 +54,16 @@ export class SessionStore {
     let label: string
     if (isSubagent && context.firstUserMessage) {
       const shortId = sessionId.slice(6, 8)
-      const task = context.firstUserMessage.slice(0, 35).replace(/\n/g, ' ')
-      label = `↳ (${shortId}) ${task}${context.firstUserMessage.length > 35 ? '…' : ''}`
+      // Strip the XML-ish envelopes Claude Code wraps around dispatched work
+      // (<teammate-message …>, <system-reminder> and friends). Without this the
+      // label is the opening tag rather than the task, and every subagent
+      // session looks identical in listings.
+      const cleaned = context.firstUserMessage
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      const task = cleaned.slice(0, 35)
+      label = `↳ (${shortId}) ${task || 'subagent'}${cleaned.length > 35 ? '…' : ''}`
     } else if (isSubagent) {
       label = `↳ (${sessionId.slice(6, 8)}) subagent`
     } else {

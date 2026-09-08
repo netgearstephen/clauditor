@@ -184,13 +184,25 @@ export function aggregateUsage(turns: TurnMetrics[]): TokenUsage {
         acc.cache_creation_input_tokens + turn.usage.cache_creation_input_tokens,
       cache_read_input_tokens:
         acc.cache_read_input_tokens + turn.usage.cache_read_input_tokens,
+      cache_creation: {
+        ephemeral_5m_input_tokens:
+          (acc.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
+          (turn.usage.cache_creation?.ephemeral_5m_input_tokens ?? 0),
+        ephemeral_1h_input_tokens:
+          (acc.cache_creation?.ephemeral_1h_input_tokens ?? 0) +
+          (turn.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0),
+      },
     }),
     {
       input_tokens: 0,
       output_tokens: 0,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
-    }
+      cache_creation: {
+        ephemeral_5m_input_tokens: 0,
+        ephemeral_1h_input_tokens: 0,
+      },
+    } as TokenUsage
   )
 }
 
@@ -326,6 +338,8 @@ function normalizeUsage(usage: Partial<TokenUsage>): TokenUsage {
     output_tokens: usage.output_tokens ?? 0,
     cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+    // Per-TTL split of the write, needed to price it: 5m is 1.25x base, 1h 2x.
+    cache_creation: usage.cache_creation,
   }
 }
 
