@@ -216,6 +216,55 @@ export interface HookDecision {
 // Model pricing table
 
 export const MODEL_PRICING: Record<string, PricingConfig> = {
+  'claude-fable-5-1': {
+    model: 'claude-fable-5-1',
+    inputPerMillion: 10.0,
+    outputPerMillion: 50.0,
+    cacheCreationPerMillion: 12.5,
+    cacheReadPerMillion: 0.25, // 0.025x - Fable 5.1 only
+  },
+  'claude-fable-5': {
+    model: 'claude-fable-5',
+    inputPerMillion: 10.0,
+    outputPerMillion: 50.0,
+    cacheCreationPerMillion: 12.5,
+    cacheReadPerMillion: 1.0,
+  },
+  'claude-opus-5': {
+    model: 'claude-opus-5',
+    inputPerMillion: 5.0,
+    outputPerMillion: 25.0,
+    cacheCreationPerMillion: 6.25,
+    cacheReadPerMillion: 0.5,
+  },
+  'claude-opus-4-8': {
+    model: 'claude-opus-4-8',
+    inputPerMillion: 5.0,
+    outputPerMillion: 25.0,
+    cacheCreationPerMillion: 6.25,
+    cacheReadPerMillion: 0.5,
+  },
+  'claude-opus-4-7': {
+    model: 'claude-opus-4-7',
+    inputPerMillion: 5.0,
+    outputPerMillion: 25.0,
+    cacheCreationPerMillion: 6.25,
+    cacheReadPerMillion: 0.5,
+  },
+  'claude-opus-4-6': {
+    model: 'claude-opus-4-6',
+    inputPerMillion: 5.0,
+    outputPerMillion: 25.0,
+    cacheCreationPerMillion: 6.25,
+    cacheReadPerMillion: 0.5,
+  },
+  'claude-sonnet-5': {
+    model: 'claude-sonnet-5',
+    inputPerMillion: 2.0,
+    outputPerMillion: 10.0,
+    cacheCreationPerMillion: 2.5,
+    cacheReadPerMillion: 0.2,
+  },
   'claude-sonnet-4-6': {
     model: 'claude-sonnet-4-6',
     inputPerMillion: 3.0,
@@ -223,24 +272,24 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheCreationPerMillion: 3.75,
     cacheReadPerMillion: 0.3,
   },
-  'claude-opus-4-6': {
-    model: 'claude-opus-4-6',
-    inputPerMillion: 15.0,
-    outputPerMillion: 75.0,
-    cacheCreationPerMillion: 18.75,
-    cacheReadPerMillion: 1.5,
-  },
   'claude-haiku-4-5': {
     model: 'claude-haiku-4-5',
-    inputPerMillion: 0.8,
-    outputPerMillion: 4.0,
-    cacheCreationPerMillion: 1.0,
-    cacheReadPerMillion: 0.08,
+    inputPerMillion: 1.0,
+    outputPerMillion: 5.0,
+    cacheCreationPerMillion: 1.25,
+    cacheReadPerMillion: 0.1,
   },
 }
 
+/**
+ * Fallback when a model ID matches nothing in MODEL_PRICING. Deliberately the
+ * priciest entry: an unknown model is far more likely to be newer than older,
+ * and over-reporting cost is a visible error where under-reporting is silent.
+ */
+export const FALLBACK_PRICING_MODEL = 'claude-fable-5-1'
+
 export const DEFAULT_CONFIG: ClauditorConfig = {
-  pricing: MODEL_PRICING['claude-sonnet-4-6'],
+  pricing: MODEL_PRICING['claude-opus-5'],
   alerts: {
     cacheBugThreshold: 3,
     loopDetectionThreshold: 3,

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { estimateCost, getPricingForModel } from './cost-tracker.js'
+import { MODEL_PRICING } from '../types.js'
 import type { TokenUsage } from '../types.js'
 
 describe('estimateCost', () => {
@@ -10,7 +11,7 @@ describe('estimateCost', () => {
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     }
-    const cost = estimateCost(usage)
+    const cost = estimateCost(usage, MODEL_PRICING['claude-sonnet-4-6'])
     // Sonnet pricing: $3/1M input + $15/1M output
     expect(cost.inputCost).toBeCloseTo(3.0)
     expect(cost.outputCost).toBeCloseTo(15.0)
@@ -49,13 +50,38 @@ describe('getPricingForModel', () => {
     expect(pricing.inputPerMillion).toBe(3.0)
   })
 
-  it('returns Opus pricing for opus model', () => {
+  it('prices Opus 4.6 at its actual rate, not a stale one', () => {
     const pricing = getPricingForModel('claude-opus-4-6-20260401')
-    expect(pricing.inputPerMillion).toBe(15.0)
+    expect(pricing.inputPerMillion).toBe(5.0)
+    expect(pricing.outputPerMillion).toBe(25.0)
   })
 
-  it('falls back to Sonnet pricing for unknown models', () => {
+  it('prices Opus 5 rather than falling through to a cheaper model', () => {
+    const pricing = getPricingForModel('claude-opus-5')
+    expect(pricing.model).toBe('claude-opus-5')
+    expect(pricing.inputPerMillion).toBe(5.0)
+    expect(pricing.cacheReadPerMillion).toBe(0.5)
+  })
+
+  it('handles context-window suffixes such as claude-opus-5[1m]', () => {
+    expect(getPricingForModel('claude-opus-5[1m]').model).toBe('claude-opus-5')
+  })
+
+  it('prefers the longest matching key when one key prefixes another', () => {
+    // 'claude-fable-5' prefixes 'claude-fable-5-1'; first-match order would
+    // price 5.1 as 5 and get the cache-read rate wrong by 4x.
+    const pricing = getPricingForModel('claude-fable-5-1')
+    expect(pricing.model).toBe('claude-fable-5-1')
+    expect(pricing.cacheReadPerMillion).toBe(0.25)
+  })
+
+  it('prices Sonnet 5 separately from Sonnet 4.6', () => {
+    expect(getPricingForModel('claude-sonnet-5').inputPerMillion).toBe(2.0)
+  })
+
+  it('falls back to the priciest known model for unknown IDs', () => {
+    // Under-reporting is silent; over-reporting is visible and gets fixed.
     const pricing = getPricingForModel('some-unknown-model')
-    expect(pricing.inputPerMillion).toBe(3.0)
+    expect(pricing.model).toBe('claude-fable-5-1')
   })
 })

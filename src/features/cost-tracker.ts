@@ -1,5 +1,5 @@
 import type { TokenUsage, PricingConfig, TurnMetrics } from '../types.js'
-import { MODEL_PRICING } from '../types.js'
+import { MODEL_PRICING, FALLBACK_PRICING_MODEL } from '../types.js'
 
 export interface CostEstimate {
   inputCost: number
@@ -17,7 +17,7 @@ export function estimateCost(
   usage: TokenUsage,
   pricing?: PricingConfig
 ): CostEstimate {
-  const p = pricing ?? MODEL_PRICING['claude-sonnet-4-6']
+  const p = pricing ?? MODEL_PRICING[FALLBACK_PRICING_MODEL]
 
   const inputCost = (usage.input_tokens / 1_000_000) * p.inputPerMillion
   const outputCost = (usage.output_tokens / 1_000_000) * p.outputPerMillion
@@ -47,18 +47,38 @@ export function estimateCost(
   }
 }
 
+/** Model IDs that matched nothing, so we warn once per ID rather than per turn. */
+const warnedUnknownModels = new Set<string>()
+
 /**
  * Detect model from assistant record and return appropriate pricing.
+ *
+ * Matches the LONGEST key that prefixes the model ID. A plain first-match loop
+ * is wrong here because several keys prefix others ('claude-fable-5' prefixes
+ * 'claude-fable-5-1'), which would silently price a model as its predecessor.
+ * Handles suffixed IDs such as 'claude-opus-5[1m]' and dated snapshots.
  */
 export function getPricingForModel(modelId: string): PricingConfig {
-  // Match model IDs like "claude-sonnet-4-6-20260301" to base pricing
+  let best: PricingConfig | null = null
+  let bestLen = -1
   for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (modelId.startsWith(key)) {
-      return pricing
+    if (modelId.startsWith(key) && key.length > bestLen) {
+      best = pricing
+      bestLen = key.length
     }
   }
-  // Default to Sonnet pricing
-  return MODEL_PRICING['claude-sonnet-4-6']
+  if (best) return best
+
+  // Unknown model. Never fail silently: an unpriced model used to fall through
+  // to mid-tier pricing, which understated real spend without any signal.
+  if (!warnedUnknownModels.has(modelId)) {
+    warnedUnknownModels.add(modelId)
+    process.emitWarning(
+      `clauditor: no pricing entry for model "${modelId}"; ` +
+        `costs are estimated using ${FALLBACK_PRICING_MODEL} rates and may be too high.`
+    )
+  }
+  return MODEL_PRICING[FALLBACK_PRICING_MODEL]
 }
 
 /**
