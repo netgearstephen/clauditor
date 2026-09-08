@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { readdir, stat } from 'node:fs/promises'
+import { statSync } from 'node:fs'
 import type { HookDecision } from '../types.js'
 import { parseJsonlFile, extractTurns, extractModel } from '../daemon/parser.js'
 import { detectCacheDegradation } from '../features/cache-health.js'
@@ -56,51 +57,42 @@ async function buildSessionStartContext(
       )
     }
 
-    // Inject session handoff(s) if available
-    const { readRecentHandoffs, extractHandoffDescription } = await import('../features/session-state.js')
-    const handoffs = readRecentHandoffs()
+    // Offer the previous session's summary. Exactly one, never a menu: a
+    // resuming user is answering "is this the thing I was doing", which is a
+    // yes or no, and the old numbered list of up to five full transcripts
+    // spent thousands of tokens making them read four they did not want.
+    const { offerSummary, promoteIfUsed } = await import('../features/journal.js')
 
-    // Helper: short project label for cross-project sessions
-    const projectLabel = (h: { project: string | null }): string => {
-      if (!h.project || h.project === cwd) return ''
-      const name = h.project.split('/').pop() || h.project
-      return ` [${name}]`
-    }
+    // A banked handoff being offered to a new session is the moment it gets
+    // used, and the only point at which a machine-written one earns a place in
+    // the user's own handoffs directory. Promote before offering, so what is
+    // offered is the promoted copy and there is never more than one.
+    try { promoteIfUsed(sessionId ?? null, cwd ?? null) } catch {}
 
-    if (handoffs.length === 1) {
-      // Single recent handoff — inject it directly
-      const h = handoffs[0]
-      const timeAgo = Math.round((Date.now() - h.timestamp) / 60000)
-      const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`
-      const label = projectLabel(h)
+    const summary = offerSummary(sessionId ?? null, cwd ?? null)
 
-      parts.push(
-        `⚠️ BEFORE doing ANYTHING else, you MUST show this message to the user EXACTLY:\n\n` +
-        `"clauditor: I have context from your previous session${label} (saved ${timeStr}). ` +
-        `I can see what you were working on. Want me to continue from there, or are you starting something new?"\n\n` +
-        `Wait for the user to respond before taking any action.\n\n` +
-        `Here is the saved context for reference:\n\n` +
-        h.content
-      )
-    } else if (handoffs.length > 1) {
-      // Multiple recent handoffs — present numbered choice
-      const options = handoffs.slice(0, 5).map((h, i) => {
-        const timeAgo = Math.round((Date.now() - h.timestamp) / 60000)
-        const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`
-        const description = extractHandoffDescription(h)
-        const label = projectLabel(h)
+    if (summary.kind !== 'none' && summary.content) {
+      const age = summary.path ? summaryAge(summary.path) : null
+      const when = age === null ? 'earlier' : age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`
 
-        return `${i + 1}. (${timeStr}) ${description}${label}`
-      }).join('\n')
+      // The augmented summary carries judgement that was banked by a model;
+      // the mechanical one is a script's output and says only what git and the
+      // transcript say. The user is told which, because how far to trust a
+      // "decisions" section depends entirely on which one produced it.
+      const offer =
+        summary.kind === 'augmented'
+          ? `I have a full handoff from your last session here (${when}), ` +
+            `including the decisions and dead ends.`
+          : `I have a summary of your last session here (${when}): ` +
+            `branch, commits and files, but no reasoning.`
 
       parts.push(
-        `⚠️ BEFORE doing ANYTHING else, you MUST show this message to the user EXACTLY:\n\n` +
-        `"clauditor: I found ${handoffs.length} recent sessions:\n\n` +
-        options + `\n\n` +
-        `Which one would you like to continue, or are you starting something new?"\n\n` +
-        `Wait for the user to choose before taking any action. Do NOT pick one yourself.\n\n` +
-        `Full context for each session follows:\n\n` +
-        handoffs.slice(0, 5).map((h, i) => `--- Session ${i + 1} ---\n${h.content}`).join('\n\n')
+        `Before doing anything else, show the user this and wait for their answer:\n\n` +
+        `"clauditor: ${offer} ` +
+        `Continue from there, or start something new?"\n\n` +
+        `Do not act on the summary until they answer. If they are starting something new, ` +
+        `ignore it entirely rather than working it into the new task.\n\n` +
+        `--- summary (${summary.kind}) ---\n${summary.content}`
       )
     }
 
@@ -304,3 +296,12 @@ handleSessionStartHook().catch((err) => {
   process.stdout.write('{}')
   process.exit(0)
 })
+
+/** Age of a summary file in whole minutes, or null if it cannot be read. */
+function summaryAge(path: string): number | null {
+  try {
+    return Math.round((Date.now() - statSync(path).mtimeMs) / 60000)
+  } catch {
+    return null
+  }
+}

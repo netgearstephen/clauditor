@@ -163,3 +163,29 @@ export function rawTurnTokens(usage: TokenUsage): number {
     usage.cache_read_input_tokens
   )
 }
+
+/**
+ * Cost-weighted waste factor for a session: what a turn costs now against what
+ * it cost at the start.
+ *
+ * There were four separate implementations of this in the codebase and one of
+ * them stayed broken for a full round of fixes because nobody remembered it
+ * existed. New callers use this one.
+ *
+ * Both ends are five-turn means, so a single outlying turn cannot swing the
+ * verdict, and both are costs rather than token counts: the four token classes
+ * differ in price by up to 20x, so a face-value ratio reports a cache-warm
+ * session as runaway spend.
+ */
+export function sessionWasteFactor(
+  turns: TurnMetrics[],
+  model: string | null
+): number {
+  if (turns.length === 0) return 1
+  const pricing = model ? getPricingForModel(model) : undefined
+  const costs = turns.map((t) => effectiveTurnCost(t.usage, pricing))
+  const n = Math.min(5, costs.length)
+  const baseline = costs.slice(0, n).reduce((a, b) => a + b, 0) / n
+  const current = costs.slice(-n).reduce((a, b) => a + b, 0) / n
+  return baseline > 0 ? current / baseline : 1
+}

@@ -1,19 +1,39 @@
 import { readFileSync } from 'node:fs'
-import type { StopHookInput, HookDecision, SessionRecord, AssistantRecord } from '../types.js'
+import type {
+  StopHookInput,
+  HookDecision,
+  SessionRecord,
+  AssistantRecord,
+  TurnMetrics,
+  TokenUsage,
+} from '../types.js'
 import { createHash } from 'node:crypto'
 import { logActivity } from '../features/activity-log.js'
-import { savePostCompactSummary } from '../features/session-state.js'
+import { readConfig } from '../config.js'
+import { loadCalibration } from '../features/calibration.js'
+import { sessionWasteFactor } from '../features/cost-tracker.js'
+import {
+  BANK_MARKER,
+  bankInstruction,
+  capturePendingHandoff,
+  readJournalState,
+  readTurns,
+  shouldBankHandoff,
+  writeJournal,
+} from '../features/journal.js'
 import { readStdin, outputDecision } from './shared.js'
 
 /**
- * Stop hook handler — detects compaction loops and blocks further execution.
- * Also captures Claude's handoff summary after a rotation block.
+ * Stop hook handler.
  *
- * This uses Claude Code's official Stop hook API. The hook receives session
- * context on stdin and outputs a decision to stdout.
+ * This is the session's single interruption point. It was one of four (a
+ * SessionStart injection, a UserPromptSubmit block, a PostToolUse block and
+ * this) writing two formats to two locations, which made it impossible to
+ * know which one had produced any given file. The other three are gone.
  *
- * When a loop is detected (same tool calls repeated 3+ times), it blocks
- * the session to prevent token waste.
+ * Three jobs, in order of how often they fire: keep the mechanical journal
+ * current, bank the judgement half of a handoff once while the cache is warm,
+ * and stop a compaction loop.
  */
 export async function handleStopHook(): Promise<void> {
   let hookInput: StopHookInput
@@ -34,13 +54,22 @@ export async function handleStopHook(): Promise<void> {
 
   // Await all async hub pushes before outputDecision — process exits after stdout write
   await Promise.allSettled([
-    captureRotationHandoff(hookInput),
     pushSubagentSignals(hookInput),
     reportKnowledgeOutcomes(hookInput),
   ])
 
-  const decision = analyzeForLoop(hookInput)
-  outputDecision(decision)
+  captureBankedHandoff(hookInput)
+
+  // A loop is the more urgent of the two reasons to block, and blocking to
+  // bank a handoff inside a loop would only add a turn to a session already
+  // repeating itself.
+  const loop = analyzeForLoop(hookInput)
+  if (loop.decision === 'block') {
+    outputDecision(loop)
+    return
+  }
+
+  outputDecision(maintainSummary(hookInput) ?? {})
 }
 
 export function analyzeForLoop(input: StopHookInput): HookDecision {
@@ -111,88 +140,6 @@ export function analyzeForLoop(input: StopHookInput): HookDecision {
   }
 
   return {}
-}
-
-/**
- * After a rotation block (PostToolUse exit code 2), Claude writes a handoff
- * summary in its response. The Stop hook fires after that response, and
- * `last_assistant_message` contains Claude's summary. If it looks like a
- * rotation handoff, save it as a rich per-session file — replacing the
- * sparse mechanical extraction that was saved during the block.
- */
-async function captureRotationHandoff(input: StopHookInput): Promise<void> {
-  const msg = input.last_assistant_message
-  if (!msg || msg.length < 100) return
-
-  // Detect if this is a rotation handoff summary.
-  // The block message tells Claude to include [clauditor-rotation] marker.
-  // Also check for strong rotation-specific AND pairs as fallback.
-  const isRotationHandoff =
-    msg.includes('[clauditor-rotation]') ||
-    (msg.includes('burning') && msg.includes('quota')) ||
-    (msg.includes('progress') && msg.includes('saved') && msg.includes('session')) ||
-    (msg.includes('fresh session') && msg.includes('tokens/turn'))
-
-  if (!isRotationHandoff) return
-
-  const cwd = extractCwd(input.transcript_path)
-
-  try {
-    await savePostCompactSummary(msg, cwd, input.transcript_path || null)
-
-    logActivity({
-      type: 'context_warning',
-      session: input.session_id.slice(0, 8),
-      message: `Stop hook: captured Claude's rotation handoff summary (${msg.length} chars)`,
-    }).catch(() => {})
-  } catch (err) {
-    process.stderr.write(`clauditor: failed to save rotation handoff: ${err}\n`)
-  }
-
-  // Push structured learnings to hub (awaited so it completes before process exits)
-  try {
-    const { resolveHubContext } = await import('../hub/client.js')
-    const { scrubSecrets } = await import('../features/secret-scrubber.js')
-    const { parseStructuredHandoff } = await import('../features/session-state.js')
-    const hub = resolveHubContext(cwd || undefined)
-    if (!hub) return
-
-    const parsed = parseStructuredHandoff(msg)
-
-    if (parsed.isStructured) {
-      const learnings: Array<{ type: string; content: string; tags?: string[] }> = []
-
-      for (const item of parsed.failedApproaches) {
-        learnings.push({ type: 'failed_approach', content: scrubSecrets(item).scrubbed })
-      }
-      for (const item of parsed.dependencies) {
-        learnings.push({ type: 'dependency', content: scrubSecrets(item).scrubbed })
-      }
-      for (const item of parsed.decisions) {
-        learnings.push({ type: 'decision', content: scrubSecrets(item).scrubbed })
-      }
-      for (const item of parsed.whatSurprisedMe) {
-        learnings.push({ type: 'surprise', content: scrubSecrets(item).scrubbed })
-      }
-      for (const item of parsed.gotchas) {
-        learnings.push({ type: 'gotcha', content: scrubSecrets(item).scrubbed })
-      }
-
-      if (learnings.length > 0) {
-        const { queueAndSend } = await import('../hub/push-queue.js')
-        await queueAndSend(
-          `${hub.config.url}/api/v1/handoff/learn`,
-          { 'X-Clauditor-Key': hub.config.apiKey, 'Content-Type': 'application/json' },
-          {
-            project_hash: hub.projectHash,
-            developer_hash: hub.config.developerHash,
-            project_name: hub.remoteUrl,
-            learnings,
-          }
-        )
-      }
-    }
-  } catch {}
 }
 
 /**
@@ -282,6 +229,85 @@ function extractCwd(transcriptPath: string): string | null {
 function hashValue(value: unknown): string {
   const str = typeof value === 'string' ? value : JSON.stringify(value ?? '')
   return createHash('sha256').update(str).digest('hex').slice(0, 16)
+}
+
+
+// --- Two-mode session summary ---
+
+/**
+ * Keep the mechanical journal current, and bank the judgement half once, while
+ * the cache is still warm enough to make it cheap.
+ *
+ * Returns a Stop decision when it wants Claude to write the judgement half,
+ * otherwise null. That decision blocks the Stop event, not the user: it
+ * appends one turn and the conversation carries on normally afterwards.
+ */
+function maintainSummary(input: StopHookInput): HookDecision | null {
+  if (!input.transcript_path) return null
+
+  const config = readConfig()
+  if (!config.rotation.enabled) return null
+
+  const cwd = extractCwd(input.transcript_path)
+  const { turns, model } = readTurns(input.transcript_path)
+
+  // The mechanical half. A script over git and the transcript, no model, so
+  // it runs on every Stop that changed anything and costs nothing to keep
+  // current.
+  try {
+    writeJournal(input.session_id, cwd, turns.length)
+  } catch {}
+
+  const state = readJournalState(cwd)
+  const cal = loadCalibration()
+  const wasteFactor = sessionWasteFactor(turns, model)
+
+  if (
+    !shouldBankHandoff(
+      state,
+      turns.length,
+      wasteFactor,
+      cal.minTurns,
+      cal.wasteThreshold,
+      input.transcript_path
+    )
+  ) {
+    return null
+  }
+
+  logActivity({
+    type: 'context_warning',
+    session: input.session_id.slice(0, 8),
+    message:
+      `banking handoff at ${wasteFactor.toFixed(1)}x waste, ` +
+      `${turns.length} turns, cache warm`,
+  }).catch(() => {})
+
+  return { decision: 'block', reason: bankInstruction(wasteFactor) }
+}
+
+/**
+ * Store the judgement half Claude just wrote in response to the bank request.
+ *
+ * The banked file stays in clauditor's own directory. It is promoted into the
+ * user's handoffs directory only if a rotation actually happens, so that
+ * directory never fills with machine-written handoffs nobody used.
+ */
+function captureBankedHandoff(input: StopHookInput): void {
+  const msg = input.last_assistant_message
+  if (!msg || !msg.includes(BANK_MARKER)) return
+  if (!input.transcript_path) return
+
+  const cwd = extractCwd(input.transcript_path)
+  const { turns } = readTurns(input.transcript_path)
+
+  if (capturePendingHandoff(cwd, turns.length, msg)) {
+    logActivity({
+      type: 'context_warning',
+      session: input.session_id.slice(0, 8),
+      message: `banked handoff judgement (${msg.length} chars)`,
+    }).catch(() => {})
+  }
 }
 
 // Run if invoked directly

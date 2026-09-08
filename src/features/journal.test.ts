@@ -1,0 +1,405 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+/** Each test needs a fresh import to pick up the mocked homedir. */
+async function importFresh(tempDir: string) {
+  vi.resetModules()
+  vi.doMock('node:os', () => ({ homedir: () => tempDir }))
+  return await import('./journal.js')
+}
+
+const CWD = '/home/user/project-a'
+
+function transcriptWith(timestamps: string[], dir: string): string {
+  const path = join(dir, 'transcript.jsonl')
+  writeFileSync(
+    path,
+    timestamps
+      .map((ts) => JSON.stringify({ type: 'assistant', timestamp: ts }))
+      .join('\n')
+  )
+  return path
+}
+
+/** Write a handoff of the shape the /handoff skill produces. */
+function writeUserHandoff(
+  home: string,
+  repo: string,
+  body: string,
+  mtimeMs: number,
+  slug = 'task'
+): string {
+  const dir = join(home, '.claude', 'handoffs')
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, `${slug}-20260908-1303.md`)
+  writeFileSync(
+    path,
+    `# Handoff: ${body}\n\n**Repo**: ${repo}\n**Branch**: main\n\n## Mission\n${body}\n`
+  )
+  utimesSync(path, mtimeMs / 1000, mtimeMs / 1000)
+  return path
+}
+
+describe('journal', () => {
+  let tempDir: string
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-journal-'))
+  })
+
+  afterEach(() => {
+    vi.doUnmock('node:os')
+    vi.resetModules()
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  describe('breakEvenTurns', () => {
+    it('returns null when there is nothing to recover', async () => {
+      const { breakEvenTurns } = await importFresh(tempDir)
+      expect(breakEvenTurns(1)).toBeNull()
+      expect(breakEvenTurns(0.8)).toBeNull()
+    })
+
+    it('follows T = 20 / (w - 1)', async () => {
+      const { breakEvenTurns } = await importFresh(tempDir)
+      expect(breakEvenTurns(2)).toBe(20)
+      expect(breakEvenTurns(3)).toBe(10)
+      expect(breakEvenTurns(1.5)).toBe(40)
+    })
+
+    it('pays back sooner the more wasteful the session is', async () => {
+      const { breakEvenTurns } = await importFresh(tempDir)
+      expect(breakEvenTurns(5)!).toBeLessThan(breakEvenTurns(2)!)
+    })
+  })
+
+  describe('msSinceLastTurn', () => {
+    it('measures from the last timestamped record, not the first', async () => {
+      const { msSinceLastTurn } = await importFresh(tempDir)
+      const path = transcriptWith(
+        ['2026-09-08T10:00:00Z', '2026-09-08T10:30:00Z'],
+        tempDir
+      )
+      const now = Date.parse('2026-09-08T10:40:00Z')
+      expect(msSinceLastTurn(path, now)).toBe(10 * 60 * 1000)
+    })
+
+    it('returns null when there is no transcript to read', async () => {
+      const { msSinceLastTurn } = await importFresh(tempDir)
+      expect(msSinceLastTurn(null)).toBeNull()
+      expect(msSinceLastTurn(join(tempDir, 'absent.jsonl'))).toBeNull()
+    })
+  })
+
+  describe('isCacheWarm', () => {
+    it('is warm inside the TTL and cold outside it', async () => {
+      const { isCacheWarm } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      expect(isCacheWarm(path, Date.parse('2026-09-08T10:59:00Z'))).toBe(true)
+      expect(isCacheWarm(path, Date.parse('2026-09-08T11:01:00Z'))).toBe(false)
+    })
+
+    it('treats unknown as warm', async () => {
+      const { isCacheWarm } = await importFresh(tempDir)
+      // Banking a warm turn that turns out cold wastes one cheap turn.
+      // Skipping it leaves the session with no handoff at all.
+      expect(isCacheWarm(null)).toBe(true)
+    })
+  })
+
+  describe('shouldWriteJournal', () => {
+    it('writes when there is no journal yet', async () => {
+      const { shouldWriteJournal } = await importFresh(tempDir)
+      const state = { lastWriteAt: 0, lastFingerprint: '', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      expect(shouldWriteJournal(state, 'anything', 1000)).toBe(true)
+    })
+
+    it('writes when the session moved', async () => {
+      const { shouldWriteJournal } = await importFresh(tempDir)
+      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      expect(shouldWriteJournal(state, 'b', 2000)).toBe(true)
+    })
+
+    it('skips when nothing changed and the journal is fresh', async () => {
+      const { shouldWriteJournal } = await importFresh(tempDir)
+      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      expect(shouldWriteJournal(state, 'a', 1000 + 60_000)).toBe(false)
+    })
+
+    it('writes anyway once the staleness cap is passed', async () => {
+      const { shouldWriteJournal } = await importFresh(tempDir)
+      // Standing in for "before the cache expires", which cannot be predicted:
+      // a cache dies during idleness, when no hook fires.
+      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      expect(shouldWriteJournal(state, 'a', 1000 + 16 * 60_000)).toBe(true)
+    })
+  })
+
+  describe('shouldBankHandoff', () => {
+    const fresh = { lastWriteAt: 0, lastFingerprint: '', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+
+    it('banks once break-even is crossed and the cache is warm', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const now = Date.parse('2026-09-08T10:10:00Z')
+      expect(shouldBankHandoff(fresh, 80, 2.0, 61, 1.5, path, now)).toBe(true)
+    })
+
+    it('never banks twice in a session', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const now = Date.parse('2026-09-08T10:10:00Z')
+      const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 70 }
+      expect(shouldBankHandoff(banked, 200, 9.0, 61, 1.5, path, now)).toBe(false)
+    })
+
+    it('does not bank once the cache is cold', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      // The whole point of banking early: cold, the same document costs
+      // roughly 20x more and adds ~23 turns to break-even instead of ~1.
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const cold = Date.parse('2026-09-08T11:30:00Z')
+      expect(shouldBankHandoff(fresh, 80, 2.0, 61, 1.5, path, cold)).toBe(false)
+    })
+
+    it('does not bank a short session', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const now = Date.parse('2026-09-08T10:10:00Z')
+      expect(shouldBankHandoff(fresh, 10, 9.0, 61, 1.5, path, now)).toBe(false)
+    })
+
+    it('does not bank below the waste threshold', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const now = Date.parse('2026-09-08T10:10:00Z')
+      expect(shouldBankHandoff(fresh, 200, 1.2, 61, 1.5, path, now)).toBe(false)
+    })
+  })
+
+  describe('capturePendingHandoff', () => {
+    it('stores the judgement and strips the marker', async () => {
+      const j = await importFresh(tempDir)
+      const body = `## Mission\n${'Ship the thing. '.repeat(20)}`
+      expect(j.capturePendingHandoff(CWD, 80, `${body}\n${j.BANK_MARKER}`)).toBe(true)
+
+      const stored = j.offerSummary(null, CWD)
+      expect(stored.kind).toBe('augmented')
+      expect(stored.content).toContain('## Mission')
+      expect(stored.content).not.toContain(j.BANK_MARKER)
+    })
+
+    it('records that the session has banked, so it cannot bank again', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`)
+      expect(j.readJournalState(CWD).bankedAt).toBeGreaterThan(0)
+      expect(j.readJournalState(CWD).bankedAtTurn).toBe(80)
+    })
+
+    it('rejects a reply too short to be a handoff', async () => {
+      const j = await importFresh(tempDir)
+      expect(j.capturePendingHandoff(CWD, 80, `ok ${j.BANK_MARKER}`)).toBe(false)
+      expect(existsSync(j.pendingHandoffPath(CWD))).toBe(false)
+    })
+  })
+
+  describe('offerSummary', () => {
+    it('offers nothing when there is nothing to offer', async () => {
+      const j = await importFresh(tempDir)
+      expect(j.offerSummary(null, CWD).kind).toBe('none')
+    })
+
+    it('offers the mechanical journal when only that exists', async () => {
+      const j = await importFresh(tempDir)
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.journalPath(CWD), '# Session journal\n\n**Branch**: main\n')
+
+      const offered = j.offerSummary(null, CWD)
+      expect(offered.kind).toBe('mechanical')
+      expect(offered.content).toContain('**Branch**: main')
+    })
+
+    it('prefers the banked judgement even when the journal is newer', async () => {
+      const j = await importFresh(tempDir)
+      // The augmented summary regenerates its facts at read time, so a newer
+      // journal never makes it the staler of the two.
+      j.capturePendingHandoff(CWD, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`)
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.journalPath(CWD), '# Session journal\n\nwritten later\n')
+
+      expect(j.offerSummary(null, CWD).kind).toBe('augmented')
+    })
+
+    it('keeps projects apart', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`)
+      expect(j.offerSummary(null, '/home/user/project-b').kind).toBe('none')
+    })
+
+    it('prefers a hand-written handoff to an older banked one', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, `## Mission\nbanked\n${'x'.repeat(200)}\n${j.BANK_MARKER}`)
+      writeUserHandoff(tempDir, CWD, 'hand-written', Date.now() + 60_000)
+
+      const offered = j.offerSummary(null, CWD)
+      expect(offered.kind).toBe('augmented')
+      expect(offered.content).toContain('hand-written')
+      expect(offered.content).not.toContain('banked')
+    })
+
+    it('ignores a hand-written handoff for a different repo', async () => {
+      const j = await importFresh(tempDir)
+      writeUserHandoff(tempDir, '/home/user/somewhere-else', 'other repo', Date.now() + 60_000)
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.journalPath(CWD), '# Session journal\n\n**Branch**: main\n')
+
+      const offered = j.offerSummary(null, CWD)
+      expect(offered.kind).toBe('mechanical')
+    })
+  })
+
+  describe('findUserHandoff', () => {
+    it('matches on the Repo header, not the filename', async () => {
+      const j = await importFresh(tempDir)
+      writeUserHandoff(tempDir, CWD, 'the right one', Date.now())
+      expect(j.findUserHandoff(CWD)?.content).toContain('the right one')
+    })
+
+    it('takes the newest of several for the same repo', async () => {
+      const j = await importFresh(tempDir)
+      writeUserHandoff(tempDir, CWD, 'older', Date.now() - 60_000, 'a')
+      writeUserHandoff(tempDir, CWD, 'newer', Date.now(), 'b')
+      expect(j.findUserHandoff(CWD)?.content).toContain('newer')
+    })
+
+    it('ignores handoffs past the age limit', async () => {
+      const j = await importFresh(tempDir)
+      const longAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
+      writeUserHandoff(tempDir, CWD, 'ancient', longAgo)
+      expect(j.findUserHandoff(CWD)).toBeNull()
+    })
+  })
+
+  describe('assembleHandoff', () => {
+    it('falls back to the stored journal when the facts script cannot run', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`)
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.journalPath(CWD), '**Branch**: main')
+
+      const assembled = j.assembleHandoff(null, CWD)
+      expect(assembled).toContain('## Mission')
+    })
+
+    it('returns nothing when no judgement has been banked', async () => {
+      const j = await importFresh(tempDir)
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.journalPath(CWD), '**Branch**: main')
+      expect(j.assembleHandoff(null, CWD)).toBeNull()
+    })
+  })
+
+  describe('judgement provenance', () => {
+    const judgement = (j: { BANK_MARKER: string }, body: string) =>
+      `## Mission\n${body}\n${'x'.repeat(200)}\n${j.BANK_MARKER}`
+
+    it('records which source the judgement came from', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, judgement(j, 'from compaction'), 'compaction')
+      expect(readFileSync(j.pendingHandoffPath(CWD), 'utf-8')).toContain(
+        'judgement source: compaction'
+      )
+    })
+
+    it('defaults to the deliberately banked source', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, judgement(j, 'banked'))
+      expect(readFileSync(j.pendingHandoffPath(CWD), 'utf-8')).toContain(
+        'judgement source: banked'
+      )
+    })
+
+    it('stops the Stop hook paying for a turn once compaction has banked one', async () => {
+      const j = await importFresh(tempDir)
+      // Compaction judgement is free, so it pre-empts the paid bank entirely.
+      j.capturePendingHandoff(CWD, 80, judgement(j, 'from compaction'), 'compaction')
+
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const now = Date.parse('2026-09-08T10:10:00Z')
+      expect(
+        j.shouldBankHandoff(j.readJournalState(CWD), 200, 9.0, 61, 1.5, path, now)
+      ).toBe(false)
+    })
+  })
+
+  describe('promoteIfUsed', () => {
+    const bank = async (tempDir: string) => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(
+        CWD,
+        80,
+        `## Mission\nWire the two modes together\n${'x'.repeat(200)}\n${j.BANK_MARKER}`
+      )
+      return j
+    }
+
+    it('promotes a banked handoff into the user directory', async () => {
+      const j = await bank(tempDir)
+      const target = j.promoteIfUsed(null, CWD)
+
+      expect(target).toContain(join(tempDir, '.claude', 'handoffs'))
+      expect(readFileSync(target!, 'utf-8')).toContain('Wire the two modes together')
+    })
+
+    it('names the file from the mission line', async () => {
+      const j = await bank(tempDir)
+      expect(j.promoteIfUsed(null, CWD)).toContain('wire-the-two-modes-together')
+    })
+
+    it('removes the banked copy so only one document survives', async () => {
+      const j = await bank(tempDir)
+      j.promoteIfUsed(null, CWD)
+      expect(existsSync(j.pendingHandoffPath(CWD))).toBe(false)
+    })
+
+    it('promotes only once, however often the project is resumed', async () => {
+      const j = await bank(tempDir)
+      expect(j.promoteIfUsed(null, CWD)).not.toBeNull()
+      expect(j.promoteIfUsed(null, CWD)).toBeNull()
+      expect(j.promoteIfUsed(null, CWD)).toBeNull()
+    })
+
+    it('does nothing when nothing was banked', async () => {
+      const j = await importFresh(tempDir)
+      expect(j.promoteIfUsed(null, CWD)).toBeNull()
+    })
+
+    it('leaves the promoted handoff findable for the same repo', async () => {
+      const j = await bank(tempDir)
+      j.promoteIfUsed(null, CWD)
+      expect(j.findUserHandoff(CWD)?.content).toContain('Wire the two modes together')
+    })
+  })
+
+  describe('bankInstruction', () => {
+    it('asks only for the sections the facts script cannot produce', async () => {
+      const { bankInstruction } = await importFresh(tempDir)
+      const text = bankInstruction(2.5)
+
+      expect(text).toContain('## Key decisions and why')
+      expect(text).toContain('## Dead ends')
+      expect(text).toContain('## Low confidence')
+      // Asking for these would produce a second, staler copy of the facts.
+      expect(text).not.toContain('## Files touched')
+      expect(text).not.toContain('## Verification command')
+      expect(text).not.toContain('## Required reading')
+    })
+
+    it('tells the user what rotating would save', async () => {
+      const { bankInstruction } = await importFresh(tempDir)
+      expect(bankInstruction(2.0)).toContain('about 20 turns')
+    })
+  })
+})

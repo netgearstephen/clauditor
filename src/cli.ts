@@ -638,7 +638,8 @@ program
 
     // 2. Push session handoffs — structured learnings + summaries as team memories
     try {
-      const { readRecentHandoffs, parseStructuredHandoff } = await import('./features/session-state.js')
+      const { parseStructuredHandoff } = await import('./features/session-state.js')
+      const { offerSummary } = await import('./features/journal.js')
       const { scrubSecrets } = await import('./features/secret-scrubber.js')
       const { queueAndSend } = await import('./hub/push-queue.js')
       const { createHash } = await import('node:crypto')
@@ -650,7 +651,12 @@ program
       let syncedHashes: string[] = []
       try { syncedHashes = JSON.parse(readFileSync(syncedFile, 'utf-8')) } catch {}
 
-      const handoffs = readRecentHandoffs(process.cwd())
+      // One summary per project now, not a directory of them. The dedupe by
+      // content hash below still stops it being pushed twice.
+      const current = offerSummary(null, process.cwd())
+      const handoffs = current.content
+        ? [{ content: current.content, path: current.path ?? 'summary' }]
+        : []
       let handoffLearnings = 0
       let summariesPushed = 0
       const newHashes: string[] = []
@@ -1741,7 +1747,7 @@ program
   .action(async (options) => {
     const { readdirSync, readFileSync, statSync } = await import('node:fs')
     const { extractFacts, scoreHandoff, generateReport } = await import('./features/handoff-quality.js')
-    const { readRecentHandoffs } = await import('./features/session-state.js')
+    const { offerSummary } = await import('./features/journal.js')
 
     // Find transcript
     let transcriptPath = options.transcript
@@ -1798,16 +1804,12 @@ program
     if (options.summary) {
       summaryContent = readFileSync(options.summary, 'utf-8')
     } else {
-      const handoffs = readRecentHandoffs()
-      if (handoffs.length === 0) {
-        console.error('No recent handoff found. Specify one with --summary <path>')
+      const current = offerSummary(null, transcriptCwd ?? process.cwd())
+      if (!current.content) {
+        console.error('No summary found for this project. Specify one with --summary <path>')
         process.exit(1)
       }
-      // Prefer handoff from the same project as the transcript
-      const matched = transcriptCwd
-        ? handoffs.find(h => h.project === transcriptCwd || h.content.includes(transcriptCwd!))
-        : null
-      summaryContent = (matched || handoffs[0]).content
+      summaryContent = current.content
     }
 
     // Extract and score

@@ -4,6 +4,22 @@ import { resolve, basename } from 'node:path'
 import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from './cost-tracker.js'
 import type { TokenUsage } from '../types.js'
 
+/**
+ * RETIRED, except for `parseStructuredHandoff` and `findTranscriptPathSync`.
+ *
+ * Session summaries now live in `~/.clauditor/journals/` and are produced by
+ * `features/journal.ts`. Nothing writes to `~/.clauditor/sessions/` any more,
+ * and `saveSessionState`, `savePostCompactSummary`, `readRecentHandoffs`,
+ * `readLastSessionState`, `extractHandoffDescription` and
+ * `extractSessionStateFromTranscript` have no callers left.
+ *
+ * They are kept for now rather than deleted, but do NOT wire them back up. The
+ * whole point of the journal is that there is one summary in one place written
+ * by one code path; calling any of these would quietly restore a second format
+ * in a second location, which is the arrangement it replaced. If you need what
+ * one of them did, extend `features/journal.ts` instead.
+ */
+
 const CLAUDITOR_DIR = resolve(homedir(), '.clauditor')
 const SESSIONS_DIR = resolve(CLAUDITOR_DIR, 'sessions')
 // Keep legacy path for backward compat reads

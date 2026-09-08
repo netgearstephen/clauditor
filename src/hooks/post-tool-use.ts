@@ -12,7 +12,6 @@ import { hasResumeBoundary } from '../features/resume-detector.js'
 import { detectResumeAnomaly } from '../features/resume-detector.js'
 import { estimateQuotaBurnRate } from '../features/quota-burn.js'
 import { logActivity } from '../features/activity-log.js'
-import { saveSessionState, extractSessionStateFromTranscript, findTranscriptPathSync as findTranscriptSync } from '../features/session-state.js'
 import { readConfig } from '../config.js'
 import { loadCalibration } from '../features/calibration.js'
 import { readStdin, outputDecision, writeJsonFileAtomic, readJsonFile } from './shared.js'
@@ -508,13 +507,10 @@ async function checkSessionHealth(sessionId: string): Promise<HookDecision | nul
       )
     }
 
-    // SESSION ROTATION — check waste factor.
-    // If waste is 10x+, BLOCK the tool result. Claude must stop.
-    // This works during autonomous operation when UserPromptSubmit doesn't fire.
-    const rotationBlock = checkSessionRotationBlock(sessionId, turns, extractModel(records))
-    if (rotationBlock) {
-      return rotationBlock
-    }
+    // Session rotation used to block the tool result here. It no longer does.
+    // Rotation is handled entirely by the Stop hook, which banks a handoff
+    // while the cache is warm rather than interrupting mid-task, and blocking
+    // a tool result was the most disruptive of the four paths that did this.
 
     if (warnings.length > 0) {
       return { additionalContext: warnings.join('\n\n') }
@@ -616,100 +612,6 @@ function checkSkillNudge(sessionId: string, toolName: string): string | null {
 
   try { writeJsonFileAtomic(NUDGE_FILE, state) } catch {}
   return null
-}
-
-/**
- * Session rotation via PostToolUse BLOCK.
- *
- * This fires during autonomous operation when UserPromptSubmit doesn't.
- * Uses decision: "block" to stop Claude after a tool call.
- * Same waste factor logic, but blocks the tool result.
- */
-function checkSessionRotationBlock(
-  sessionId: string,
-  turns: TurnMetrics[],
-  model: string | null
-): HookDecision | null {
-  const config = readConfig()
-  if (!config.rotation.enabled) return null
-
-  // Use calibrated threshold (auto-computed from user's own session history)
-  // Falls back to conservative 10x / 30 turns if not enough data
-  const cal = loadCalibration()
-
-  if (turns.length < cal.minTurns) return null
-
-  // Waste is a COST ratio, not a token ratio - see cost-tracker.effectiveTurnCost.
-  // This was the fourth copy of this calculation and the last one still summing
-  // token classes at face value, which is why it kept reporting several times
-  // the real figure after the others were corrected.
-  const pricing = model ? getPricingForModel(model) : undefined
-  const turnTokens = turns.map((t) => rawTurnTokens(t.usage))
-  const turnCosts = turns.map((t) => effectiveTurnCost(t.usage, pricing))
-  const n = Math.min(5, turnTokens.length)
-  const baseline = turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / n
-  const current = turnTokens.slice(-5).reduce((a, b) => a + b, 0) / n
-  const baselineCost = turnCosts.slice(0, 5).reduce((a, b) => a + b, 0) / n
-  const currentCost = turnCosts.slice(-5).reduce((a, b) => a + b, 0) / n
-  const wasteFactor = baselineCost > 0 ? Math.round(currentCost / baselineCost) : 1
-
-  if (wasteFactor < cal.wasteThreshold) return null
-
-  // Re-block logic: track the waste level when last blocked.
-  // If waste dropped significantly (compaction happened), reset and block again.
-  // Otherwise, only re-block at every 2x increase to avoid spamming.
-  const blockedAt = readJsonFile<Record<string, number>>(BLOCK_NUDGE_FILE, {})
-  const key = `post-${sessionId}`
-  const lastBlockedWaste = blockedAt[key] || 0
-  if (lastBlockedWaste > 0) {
-    // Waste dropped by more than half → compaction happened, reset and re-block
-    if (wasteFactor < lastBlockedWaste / 2) {
-      // Reset — will proceed to block below
-    } else if (wasteFactor < lastBlockedWaste + 2) {
-      return null
-    }
-  }
-
-  // Mark as blocked at this waste level
-  blockedAt[key] = wasteFactor
-  try { writeJsonFileAtomic(BLOCK_NUDGE_FILE, blockedAt) } catch {}
-
-  // Save session state — each save creates a separate file now (no overwrite risk)
-  const transcriptPath = findTranscriptSync(sessionId)
-  if (transcriptPath) {
-    const stateData = extractSessionStateFromTranscript(sessionId, transcriptPath)
-    if (stateData) saveSessionState(stateData)
-  }
-
-  logActivity({
-    type: 'context_warning',
-    session: sessionId.slice(0, 8),
-    message: `BLOCKED tool result — ${wasteFactor}x waste (${Math.round(current / 1000)}k/turn vs ${Math.round(baseline / 1000)}k baseline)`,
-  }).catch(() => {})
-
-  return {
-    decision: 'block',
-    reason:
-      `clauditor: This session is using ${wasteFactor}x more quota per turn than when it started ` +
-      `(${Math.round(baseline / 1000)}k → ${Math.round(current / 1000)}k tokens/turn). ` +
-      `Session progress has been saved to ~/.clauditor/last-session.md.\n` +
-      `IMPORTANT — Before stopping, do these two things:\n` +
-      `1. Tell the user: this session is burning ${wasteFactor}x more quota than necessary. ` +
-      `Their progress is saved. Run \`claude\` to start fresh at ~${Math.round(baseline / 1000)}k tokens/turn instead of ${Math.round(current / 1000)}k.\n` +
-      `2. Write your handoff using EXACTLY this format (clauditor parses these sections to preserve context for the next session):\n\n` +
-      `TASK: (one line — what you were working on)\n\n` +
-      `COMPLETED:\n- (what's done, one bullet per item)\n\n` +
-      `IN_PROGRESS:\n- (what's partially done, include file paths and specific state)\n\n` +
-      `FAILED_APPROACHES:\n- (what was tried and didn't work, and WHY — this prevents the next session from repeating mistakes)\n\n` +
-      `DEPENDENCIES:\n- (things that must happen in order, e.g. "run migrations before build")\n\n` +
-      `DECISIONS:\n- (choices made and why, e.g. "chose X over Y because Z")\n\n` +
-      `USER_PREFERENCES:\n- (anything the user explicitly asked for or rejected)\n\n` +
-      `BLOCKERS:\n- (unresolved issues, things that need user input)\n\n` +
-      `WHAT_SURPRISED_ME:\n- (unexpected behavior, undocumented quirks)\n\n` +
-      `GOTCHAS:\n- (file: path/to/file — specific warning about this file)\n\n` +
-      `3. In the new session, tell the user to just say "continue where I left off" — clauditor will inject the saved context automatically.\n` +
-      `4. Include the marker [clauditor-rotation] at the end of your response so clauditor can capture your summary.`,
-  }
 }
 
 const BLOCK_NUDGE_FILE = resolve(homedir(), '.clauditor', 'prompt-block-nudge.json')
