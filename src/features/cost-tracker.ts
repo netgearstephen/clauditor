@@ -120,3 +120,33 @@ function formatDollars(amount: number): string {
   if (amount < 0.01) return `~$${amount.toFixed(4)}`
   return `~$${amount.toFixed(2)}`
 }
+
+/**
+ * Cost-weighted size of a single turn, in dollars.
+ *
+ * Use this, never the face-value token sum, whenever turns are being compared
+ * to each other. The four token classes differ in price by up to 20x: a cache
+ * read costs 0.1x base input while a 1-hour cache write costs 2x. Summing them
+ * at face value makes a healthy cache-warm session - which is mostly cheap
+ * reads - look like runaway spend, and understates a cold session that is
+ * mostly expensive writes.
+ */
+export function effectiveTurnCost(
+  usage: TokenUsage,
+  pricing?: PricingConfig
+): number {
+  return estimateCost(usage, pricing).totalCost
+}
+
+/**
+ * Face-value token count for a turn. Display only - it is what the context
+ * window holds, not what the turn costs. Never compare turns with it.
+ */
+export function rawTurnTokens(usage: TokenUsage): number {
+  return (
+    usage.input_tokens +
+    usage.output_tokens +
+    usage.cache_creation_input_tokens +
+    usage.cache_read_input_tokens
+  )
+}

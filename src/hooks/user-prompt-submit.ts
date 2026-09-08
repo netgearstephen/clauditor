@@ -6,6 +6,8 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { logActivity } from '../features/activity-log.js'
 import { readStdin, readJsonFile, writeJsonFileAtomic, findTranscriptPathSync } from './shared.js'
+import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from '../features/cost-tracker.js'
+import type { TokenUsage } from '../types.js'
 
 /**
  * UserPromptSubmit hook — fires BEFORE Claude processes the user's prompt.
@@ -81,8 +83,12 @@ export async function handleUserPromptSubmitHook(): Promise<void> {
       return
     }
 
-    const wasteFactor = analysis.baseline > 0
-      ? Math.round(analysis.current / analysis.baseline)
+    // Waste is a COST ratio, not a token ratio. A cache-warm session grows
+    // mostly in cache reads at 0.1x base, so a face-value token ratio reports
+    // several times more waste than the session actually incurs, and rotating
+    // on it discards a warm cache to rebuild it at 2x. See upstream issue #140.
+    const wasteFactor = analysis.baselineCost > 0
+      ? Math.round(analysis.currentCost / analysis.baselineCost)
       : 0
 
     if (wasteFactor < cal.wasteThreshold) {
@@ -152,8 +158,10 @@ export async function handleUserPromptSubmitHook(): Promise<void> {
 
 interface SessionAnalysis {
   turns: number
-  baseline: number      // avg tokens/turn for first 5 turns
-  current: number       // avg tokens/turn for last 5 turns
+  baseline: number      // avg RAW tokens/turn for first 5 turns (display only)
+  current: number       // avg RAW tokens/turn for last 5 turns (display only)
+  baselineCost: number  // avg cost/turn for first 5 turns, in dollars
+  currentCost: number   // avg cost/turn for last 5 turns, in dollars
   cwd: string | null
   branch: string | null
   filesModified: string[]
@@ -165,6 +173,8 @@ function analyzeSession(transcriptPath: string): SessionAnalysis | null {
     const lines = content.split('\n')
 
     const turnTokens: number[] = []
+    const turnCosts: number[] = []
+    let model: string | null = null
     const filesModified = new Set<string>()
     let cwd: string | null = null
     let branch: string | null = null
@@ -184,9 +194,18 @@ function analyzeSession(transcriptPath: string): SessionAnalysis | null {
         const r = JSON.parse(line)
         if (r.type === 'assistant' && r.message?.usage) {
           const u = r.message.usage
-          const total = (u.input_tokens || 0) + (u.output_tokens || 0) +
-            (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0)
-          turnTokens.push(total)
+          if (!model && r.message?.model) model = r.message.model
+          const usage: TokenUsage = {
+            input_tokens: u.input_tokens || 0,
+            output_tokens: u.output_tokens || 0,
+            cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+            cache_read_input_tokens: u.cache_read_input_tokens || 0,
+            cache_creation: u.cache_creation,
+          }
+          turnTokens.push(rawTurnTokens(usage))
+          turnCosts.push(
+            effectiveTurnCost(usage, model ? getPricingForModel(model) : undefined)
+          )
         }
         if (r.type === 'assistant' && r.message?.content) {
           for (const block of r.message.content) {
@@ -201,13 +220,18 @@ function analyzeSession(transcriptPath: string): SessionAnalysis | null {
 
     if (turnTokens.length < 20) return null // minimum for analysis, not blocking
 
-    const baseline = turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / Math.min(5, turnTokens.length)
-    const current = turnTokens.slice(-5).reduce((a, b) => a + b, 0) / Math.min(5, turnTokens.length)
+    const n = Math.min(5, turnTokens.length)
+    const baseline = turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / n
+    const current = turnTokens.slice(-5).reduce((a, b) => a + b, 0) / n
+    const baselineCost = turnCosts.slice(0, 5).reduce((a, b) => a + b, 0) / n
+    const currentCost = turnCosts.slice(-5).reduce((a, b) => a + b, 0) / n
 
     return {
       turns: turnTokens.length,
       baseline,
       current,
+      baselineCost,
+      currentCost,
       cwd,
       branch,
       filesModified: Array.from(filesModified),

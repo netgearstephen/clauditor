@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve, basename } from 'node:path'
+import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from './cost-tracker.js'
+import type { TokenUsage } from '../types.js'
 
 const CLAUDITOR_DIR = resolve(homedir(), '.clauditor')
 const SESSIONS_DIR = resolve(CLAUDITOR_DIR, 'sessions')
@@ -432,6 +434,8 @@ export function extractSessionStateFromTranscript(
     let branch: string | null = null
     let turnCount = 0
     const turnTokens: number[] = []
+    const turnCosts: number[] = []
+    let model: string | null = null
     const filesModified = new Set<string>()
     const filesRead = new Set<string>()
     const gitCommits: string[] = []
@@ -469,9 +473,18 @@ export function extractSessionStateFromTranscript(
         // Count turns
         if (r.type === 'assistant' && r.message?.usage) {
           const u = r.message.usage
-          const total = (u.input_tokens || 0) + (u.output_tokens || 0) +
-            (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0)
-          turnTokens.push(total)
+          if (!model && r.message?.model) model = r.message.model
+          const usage: TokenUsage = {
+            input_tokens: u.input_tokens || 0,
+            output_tokens: u.output_tokens || 0,
+            cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+            cache_read_input_tokens: u.cache_read_input_tokens || 0,
+            cache_creation: u.cache_creation,
+          }
+          turnTokens.push(rawTurnTokens(usage))
+          turnCosts.push(
+            effectiveTurnCost(usage, model ? getPricingForModel(model) : undefined)
+          )
           turnCount++
         }
 
@@ -558,9 +571,11 @@ export function extractSessionStateFromTranscript(
 
     if (turnTokens.length < 5) return null
 
-    const baseline = turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / 5
     const current = turnTokens.slice(-5).reduce((a, b) => a + b, 0) / 5
-    const wasteFactor = baseline > 0 ? Math.round(current / baseline) : 1
+    // Cost ratio, not token ratio - see cost-tracker.effectiveTurnCost.
+    const baselineCost = turnCosts.slice(0, 5).reduce((a, b) => a + b, 0) / 5
+    const currentCost = turnCosts.slice(-5).reduce((a, b) => a + b, 0) / 5
+    const wasteFactor = baselineCost > 0 ? Math.round(currentCost / baselineCost) : 1
 
     // Deduplicate key commands by base command (strip pipes, redirects, tail/head)
     const seenBases = new Set<string>()

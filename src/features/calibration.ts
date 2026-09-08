@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from './cost-tracker.js'
+import type { TokenUsage } from '../types.js'
 
 const CLAUDITOR_DIR = resolve(homedir(), '.clauditor')
 const CALIBRATION_FILE = resolve(CLAUDITOR_DIR, 'calibration.json')
@@ -33,7 +35,7 @@ interface SessionProfile {
 const CONSERVATIVE_DEFAULT: CalibrationData = {
   calibratedAt: new Date().toISOString(),
   sessionsAnalyzed: 0,
-  wasteThreshold: 10,
+  wasteThreshold: 2.0,
   minTurns: 30,
   confident: false,
   sessionProfiles: [],
@@ -109,7 +111,7 @@ export function calibrate(): CalibrationData {
     return {
       calibratedAt: new Date().toISOString(),
       sessionsAnalyzed: profiles.length,
-      wasteThreshold: 10,
+      wasteThreshold: 2.0,
       minTurns: 30,
       confident: false,
       sessionProfiles: profiles,
@@ -127,21 +129,27 @@ export function calibrate(): CalibrationData {
 
   if (breakEvenWastes.length < 5) {
     // Few data points — use 75th percentile (conservative)
-    wasteThreshold = breakEvenWastes[Math.floor(breakEvenWastes.length * 0.75)] || 10
+    wasteThreshold = breakEvenWastes[Math.floor(breakEvenWastes.length * 0.75)] || 2.0
     confident = false
   } else if (breakEvenWastes.length < 10) {
     // Moderate data — use 75th percentile
-    wasteThreshold = breakEvenWastes[Math.floor(breakEvenWastes.length * 0.75)] ?? 10
+    wasteThreshold = breakEvenWastes[Math.floor(breakEvenWastes.length * 0.75)] ?? 2.0
     confident = true
   } else {
     // Good data — use median
-    wasteThreshold = breakEvenWastes[Math.floor(breakEvenWastes.length / 2)] ?? 10
+    wasteThreshold = breakEvenWastes[Math.floor(breakEvenWastes.length / 2)] ?? 2.0
     confident = true
   }
 
   // Clamp to reasonable range: minimum 5x, maximum 15x
   // Below 5x is too disruptive — user is mid-task and the session is still productive
-  wasteThreshold = Math.max(5, Math.min(15, Math.round(wasteThreshold)))
+  // Bounds are for COST ratios, which run far lower than the face-value token
+  // ratios these were originally tuned against. Measured over 207 real
+  // sessions of 20+ turns: median cost ratio 0.91 (the typical session is
+  // cheaper per turn than when it began), p95 2.63, max 6.94. The same
+  // sessions produce a median RAW ratio of 3.10, which is what used to make
+  // healthy sessions look wasteful. A floor of 5 here would never fire.
+  wasteThreshold = Math.max(1.5, Math.min(5, Math.round(wasteThreshold * 10) / 10))
 
   // Compute minTurns: the median turn count where sessions reach 2x waste
   // (don't block before sessions have done meaningful work)
@@ -188,17 +196,27 @@ function analyzeSession(filePath: string): SessionProfile | null {
 
     const turnTokens: number[] = []
 
+    const turnCosts: number[] = []
+
+    let model: string | null = null
+
     for (const line of lines) {
       try {
         const r = JSON.parse(line)
         if (r.type === 'assistant' && r.message?.usage) {
           const u = r.message.usage
-          const total =
-            (u.input_tokens || 0) +
-            (u.output_tokens || 0) +
-            (u.cache_creation_input_tokens || 0) +
-            (u.cache_read_input_tokens || 0)
-          turnTokens.push(total)
+          if (!model && r.message?.model) model = r.message.model
+          const usage: TokenUsage = {
+            input_tokens: u.input_tokens || 0,
+            output_tokens: u.output_tokens || 0,
+            cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+            cache_read_input_tokens: u.cache_read_input_tokens || 0,
+            cache_creation: u.cache_creation,
+          }
+          turnTokens.push(rawTurnTokens(usage))
+          turnCosts.push(
+            effectiveTurnCost(usage, model ? getPricingForModel(model) : undefined)
+          )
         }
       } catch { continue }
     }
@@ -207,7 +225,12 @@ function analyzeSession(filePath: string): SessionProfile | null {
 
     const baseline = turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / 5
     const final = turnTokens.slice(-5).reduce((a, b) => a + b, 0) / 5
-    const wasteFactor = baseline > 0 ? final / baseline : 1
+    // Cost ratio, not token ratio - see cost-tracker.effectiveTurnCost. The
+    // raw ratio counts cache reads at face value and overstates waste several
+    // times over on exactly the sessions that are cheapest to continue.
+    const baselineCost = turnCosts.slice(0, 5).reduce((a, b) => a + b, 0) / 5
+    const finalCost = turnCosts.slice(-5).reduce((a, b) => a + b, 0) / 5
+    const wasteFactor = baselineCost > 0 ? finalCost / baselineCost : 1
 
     // Find break-even point:
     // Rotation cost is NOT just 5 turns of cache warmup. It includes:

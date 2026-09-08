@@ -87,7 +87,7 @@ describe('loadCalibration', () => {
     const mod = await importFresh(tempDir)
     const result = mod.loadCalibration()
 
-    expect(result.wasteThreshold).toBe(10)
+    expect(result.wasteThreshold).toBe(2.0)
     expect(result.minTurns).toBe(30)
     expect(result.confident).toBe(false)
     expect(result.sessionsAnalyzed).toBe(0)
@@ -126,7 +126,7 @@ describe('loadCalibration', () => {
     const mod = await importFresh(tempDir)
     const result = mod.loadCalibration()
 
-    expect(result.wasteThreshold).toBe(10)
+    expect(result.wasteThreshold).toBe(2.0)
     expect(result.minTurns).toBe(30)
     expect(result.confident).toBe(false)
   })
@@ -150,7 +150,7 @@ describe('calibrate', () => {
     const mod = await importFresh(tempDir)
     const result = mod.calibrate()
 
-    expect(result.wasteThreshold).toBe(10)
+    expect(result.wasteThreshold).toBe(2.0)
     expect(result.minTurns).toBe(30)
     expect(result.confident).toBe(false)
   })
@@ -162,7 +162,7 @@ describe('calibrate', () => {
     const mod = await importFresh(tempDir)
     const result = mod.calibrate()
 
-    expect(result.wasteThreshold).toBe(10)
+    expect(result.wasteThreshold).toBe(2.0)
     expect(result.minTurns).toBe(30)
     expect(result.confident).toBe(false)
   })
@@ -179,7 +179,7 @@ describe('calibrate', () => {
     const mod = await importFresh(tempDir)
     const result = mod.calibrate()
 
-    expect(result.wasteThreshold).toBe(10)
+    expect(result.wasteThreshold).toBe(2.0)
     expect(result.minTurns).toBe(30)
     expect(result.confident).toBe(false)
     // Still analyzed all valid sessions (those with 10+ turns)
@@ -230,16 +230,48 @@ describe('calibrate', () => {
 
     expect(result.sessionsAnalyzed).toBe(6)
     expect(result.confident).toBe(true)
-    // Threshold should be clamped between 5 and 15
-    expect(result.wasteThreshold).toBeGreaterThanOrEqual(5)
-    expect(result.wasteThreshold).toBeLessThanOrEqual(15)
+    // Threshold is a cost ratio, clamped between 1.5 and 5
+    expect(result.wasteThreshold).toBeGreaterThanOrEqual(1.5)
+    expect(result.wasteThreshold).toBeLessThanOrEqual(5)
   })
 
-  it('clamps threshold to 5-15 range', async () => {
+  it('does not flag a cache-warm session whose growth is all cache reads', async () => {
+    // Regression for upstream #140. A session that grows from 50k to 200k
+    // tokens per turn entirely in cache reads costs LESS per turn at the end
+    // than at the start: the opening turns pay the 2x cache write, the later
+    // ones pay 0.1x reads. Summing token classes at face value called this 4x
+    // waste and told the user to discard a warm cache.
+    const projDir = setupProjectDir(tempDir, 'warm-cache')
+    for (let s = 0; s < 6; s++) {
+      const lines: string[] = []
+      for (let i = 0; i < 60; i++) {
+        lines.push(
+          makeAssistantRecord(`${i}`, `s${s}`, {
+            input: 0,
+            output: 500,
+            // First turn writes the prefix; later turns read a growing one.
+            cacheCreate: i === 0 ? 50_000 : 2_000,
+            cacheRead: i === 0 ? 0 : 50_000 + i * 2_500,
+          })
+        )
+      }
+      writeFileSync(join(projDir, `warm${s}.jsonl`), lines.join('\n'))
+    }
+
+    const mod = await importFresh(tempDir)
+    const result = mod.calibrate()
+
+    for (const profile of result.sessionProfiles) {
+      // Raw token ratio here is ~4x; the cost ratio is near or below 1.
+      expect(profile.wasteFactor).toBeLessThan(2)
+    }
+  })
+
+  it('clamps threshold to the 1.5-5 cost-ratio range', async () => {
     const projDir = setupProjectDir(tempDir, 'test-project')
 
-    // Create sessions with very low waste factor break-even (e.g., 1.5x)
-    // This should result in a low threshold, clamped to minimum 5
+    // Create sessions with very low waste factor break-even.
+    // Bounds are cost ratios, so the floor is 1.5, not 5.
     for (let s = 0; s < 6; s++) {
       // Very mild growth: 1x to 1.8x
       const turns = Array.from({ length: 50 }, (_, i) => {
@@ -252,9 +284,10 @@ describe('calibrate', () => {
     const mod = await importFresh(tempDir)
     const result = mod.calibrate()
 
-    // If break-even wastes are found, threshold is clamped to at least 5
-    expect(result.wasteThreshold).toBeGreaterThanOrEqual(5)
-    expect(result.wasteThreshold).toBeLessThanOrEqual(15)
+    // If break-even wastes are found, threshold is clamped into [1.5, 5]
+    expect(result.wasteThreshold).toBeGreaterThanOrEqual(1.5)
+    expect(result.wasteThreshold).toBeLessThanOrEqual(5)
+    expect(result.wasteThreshold).toBeLessThanOrEqual(5)
   })
 
   it('handles sessions with no break-even point (all null)', async () => {
@@ -271,7 +304,7 @@ describe('calibrate', () => {
     const result = mod.calibrate()
 
     // With no break-even wastes, the fallback || 10 kicks in
-    expect(result.wasteThreshold).toBe(10)
+    expect(result.wasteThreshold).toBe(2.0)
     expect(result.sessionsAnalyzed).toBe(4)
   })
 
@@ -334,7 +367,7 @@ describe('calibrate', () => {
     const calPath = join(tempDir, '.clauditor', 'calibration.json')
     const saved = JSON.parse(readFileSync(calPath, 'utf-8'))
     expect(saved.sessionsAnalyzed).toBe(4)
-    expect(saved.wasteThreshold).toBeGreaterThanOrEqual(5)
+    expect(saved.wasteThreshold).toBeGreaterThanOrEqual(1.5)
   })
 
   it('computes waste factor correctly (final / baseline)', async () => {
