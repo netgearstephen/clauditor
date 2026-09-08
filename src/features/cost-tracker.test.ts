@@ -44,6 +44,48 @@ describe('estimateCost', () => {
   })
 })
 
+describe('estimateCost cache TTL handling', () => {
+  const opus5 = MODEL_PRICING['claude-opus-5']
+
+  it('bills 1h and 5m writes at their separate rates', () => {
+    const usage: TokenUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 2_000_000,
+      cache_read_input_tokens: 0,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 1_000_000,
+        ephemeral_1h_input_tokens: 1_000_000,
+      },
+    }
+    // 1M at $6.25 (1.25x) + 1M at $10.00 (2x)
+    expect(estimateCost(usage, opus5).cacheCreationCost).toBeCloseTo(16.25)
+  })
+
+  it('assumes the 1h rate when no breakdown is present', () => {
+    const usage: TokenUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 1_000_000,
+      cache_read_input_tokens: 0,
+    }
+    // Claude Code writes at the 1h TTL. Assuming 5m understated this by 1.6x.
+    expect(estimateCost(usage, opus5).cacheCreationCost).toBeCloseTo(10.0)
+  })
+
+  it('prices a realistic Opus 5 session correctly', () => {
+    const usage: TokenUsage = {
+      input_tokens: 6_946,
+      output_tokens: 2_315_728,
+      cache_creation_input_tokens: 11_437_505,
+      cache_read_input_tokens: 467_211_772,
+      cache_creation: { ephemeral_1h_input_tokens: 11_437_505 },
+    }
+    // Was reported as $217.81 under the Sonnet-4.6 fallback with 5m writes.
+    expect(estimateCost(usage, opus5).totalCost).toBeCloseTo(405.9, 0)
+  })
+})
+
 describe('getPricingForModel', () => {
   it('returns Sonnet pricing for sonnet model', () => {
     const pricing = getPricingForModel('claude-sonnet-4-6-20260301')

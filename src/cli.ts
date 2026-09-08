@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { cosmiconfig } from 'cosmiconfig'
 import { DEFAULT_CONFIG } from './types.js'
+import type { TokenUsage } from './types.js'
 import type { ClauditorConfig } from './types.js'
 
 // Read version from package.json so it stays in sync with releases
@@ -822,13 +823,27 @@ program
           acc.cache_creation_input_tokens + s.totalUsage.cache_creation_input_tokens,
         cache_read_input_tokens:
           acc.cache_read_input_tokens + s.totalUsage.cache_read_input_tokens,
+        // Preserve the per-TTL split; dropping it bills every 1h write at the
+        // cheaper 5m rate.
+        cache_creation: {
+          ephemeral_5m_input_tokens:
+            (acc.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
+            (s.totalUsage.cache_creation?.ephemeral_5m_input_tokens ?? 0),
+          ephemeral_1h_input_tokens:
+            (acc.cache_creation?.ephemeral_1h_input_tokens ?? 0) +
+            (s.totalUsage.cache_creation?.ephemeral_1h_input_tokens ?? 0),
+        },
       }),
       {
         input_tokens: 0,
         output_tokens: 0,
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0,
-      }
+        cache_creation: {
+          ephemeral_5m_input_tokens: 0,
+          ephemeral_1h_input_tokens: 0,
+        },
+      } as TokenUsage
     )
 
     const totalTokens =

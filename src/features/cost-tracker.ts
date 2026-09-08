@@ -21,8 +21,17 @@ export function estimateCost(
 
   const inputCost = (usage.input_tokens / 1_000_000) * p.inputPerMillion
   const outputCost = (usage.output_tokens / 1_000_000) * p.outputPerMillion
-  const cacheCreationCost =
-    (usage.cache_creation_input_tokens / 1_000_000) * p.cacheCreationPerMillion
+  // Cache writes are billed by TTL: 1.25x base for 5 minutes, 2x for 1 hour.
+  // Claude Code writes at the 1-hour TTL, so when the breakdown is missing we
+  // assume 1h rather than the cheaper rate - guessing low here hid ~2.7x of
+  // the write line.
+  const write5m = usage.cache_creation?.ephemeral_5m_input_tokens
+  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens
+  const hasBreakdown = write5m !== undefined || write1h !== undefined
+  const cacheCreationCost = hasBreakdown
+    ? ((write5m ?? 0) / 1_000_000) * p.cacheCreationPerMillion +
+      ((write1h ?? 0) / 1_000_000) * p.cacheCreation1hPerMillion
+    : (usage.cache_creation_input_tokens / 1_000_000) * p.cacheCreation1hPerMillion
   const cacheReadCost =
     (usage.cache_read_input_tokens / 1_000_000) * p.cacheReadPerMillion
   const totalCost = inputCost + outputCost + cacheCreationCost + cacheReadCost

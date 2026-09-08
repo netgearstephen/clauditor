@@ -108,12 +108,25 @@ export class SessionStore {
           acc.cache_creation_input_tokens + turn.usage.cache_creation_input_tokens,
         cache_read_input_tokens:
           acc.cache_read_input_tokens + turn.usage.cache_read_input_tokens,
+        // Keep the per-TTL split: 1h writes cost 2x base, 5m writes 1.25x.
+        cache_creation: {
+          ephemeral_5m_input_tokens:
+            (acc.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
+            (turn.usage.cache_creation?.ephemeral_5m_input_tokens ?? 0),
+          ephemeral_1h_input_tokens:
+            (acc.cache_creation?.ephemeral_1h_input_tokens ?? 0) +
+            (turn.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0),
+        },
       }),
       {
         input_tokens: 0,
         output_tokens: 0,
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0,
+        cache_creation: {
+          ephemeral_5m_input_tokens: 0,
+          ephemeral_1h_input_tokens: 0,
+        },
       }
     )
   }

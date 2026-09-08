@@ -32,6 +32,17 @@ export interface TokenUsage {
   output_tokens: number
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
+  /**
+   * Per-TTL split of cache_creation_input_tokens, emitted by Claude Code on
+   * every assistant record. Absent it, a 1-hour write is billed at the
+   * 5-minute rate and understated by 1.6x.
+   */
+  cache_creation?: CacheCreationBreakdown
+}
+
+export interface CacheCreationBreakdown {
+  ephemeral_5m_input_tokens?: number
+  ephemeral_1h_input_tokens?: number
 }
 
 export interface ContentBlock {
@@ -150,7 +161,10 @@ export interface PricingConfig {
   model: string
   inputPerMillion: number
   outputPerMillion: number
+  /** 5-minute TTL cache write: 1.25x base input. */
   cacheCreationPerMillion: number
+  /** 1-hour TTL cache write: 2x base input. Claude Code uses this TTL. */
+  cacheCreation1hPerMillion: number
   cacheReadPerMillion: number
 }
 
@@ -221,6 +235,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 10.0,
     outputPerMillion: 50.0,
     cacheCreationPerMillion: 12.5,
+    cacheCreation1hPerMillion: 20,
     cacheReadPerMillion: 0.25, // 0.025x - Fable 5.1 only
   },
   'claude-fable-5': {
@@ -228,6 +243,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 10.0,
     outputPerMillion: 50.0,
     cacheCreationPerMillion: 12.5,
+    cacheCreation1hPerMillion: 20,
     cacheReadPerMillion: 1.0,
   },
   'claude-opus-5': {
@@ -235,6 +251,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 5.0,
     outputPerMillion: 25.0,
     cacheCreationPerMillion: 6.25,
+    cacheCreation1hPerMillion: 10,
     cacheReadPerMillion: 0.5,
   },
   'claude-opus-4-8': {
@@ -242,6 +259,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 5.0,
     outputPerMillion: 25.0,
     cacheCreationPerMillion: 6.25,
+    cacheCreation1hPerMillion: 10,
     cacheReadPerMillion: 0.5,
   },
   'claude-opus-4-7': {
@@ -249,6 +267,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 5.0,
     outputPerMillion: 25.0,
     cacheCreationPerMillion: 6.25,
+    cacheCreation1hPerMillion: 10,
     cacheReadPerMillion: 0.5,
   },
   'claude-opus-4-6': {
@@ -256,6 +275,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 5.0,
     outputPerMillion: 25.0,
     cacheCreationPerMillion: 6.25,
+    cacheCreation1hPerMillion: 10,
     cacheReadPerMillion: 0.5,
   },
   'claude-sonnet-5': {
@@ -263,6 +283,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 2.0,
     outputPerMillion: 10.0,
     cacheCreationPerMillion: 2.5,
+    cacheCreation1hPerMillion: 4,
     cacheReadPerMillion: 0.2,
   },
   'claude-sonnet-4-6': {
@@ -270,6 +291,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 3.0,
     outputPerMillion: 15.0,
     cacheCreationPerMillion: 3.75,
+    cacheCreation1hPerMillion: 6,
     cacheReadPerMillion: 0.3,
   },
   'claude-haiku-4-5': {
@@ -277,6 +299,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     inputPerMillion: 1.0,
     outputPerMillion: 5.0,
     cacheCreationPerMillion: 1.25,
+    cacheCreation1hPerMillion: 2,
     cacheReadPerMillion: 0.1,
   },
 }
