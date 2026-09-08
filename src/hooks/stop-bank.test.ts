@@ -1,0 +1,150 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
+
+/**
+ * End-to-end tests for banking, run against the built hook in a subprocess
+ * with HOME redirected.
+ *
+ * These exist because the unit tests did not catch a bug that made the feature
+ * completely inert. They fed `last_assistant_message` alongside
+ * `stop_hook_active: false`, which cannot happen: a reply to a Stop-hook block
+ * always arrives with the flag true. The test encoded the author's assumption
+ * rather than the harness's behaviour, so it passed while the real path never
+ * stored anything. Driving the actual hook is the only way to be honest about
+ * which combinations occur.
+ */
+
+const HOOK = resolve(__dirname, '..', '..', 'dist', 'hooks', 'stop.js')
+const CWD = '/home/user/project-a'
+
+function encodeCwd(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').slice(0, 100)
+}
+
+describe('Stop hook banking, end to end', () => {
+  let home: string
+  let transcript: string
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'clauditor-bank-e2e-'))
+    transcript = join(home, 'transcript.jsonl')
+    const now = new Date().toISOString()
+    const recs = [{ type: 'user', cwd: CWD, timestamp: now }]
+    for (let i = 0; i < 70; i++) {
+      recs.push({
+        type: 'assistant',
+        timestamp: now,
+        message: {
+          model: 'claude-opus-5',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: i < 10 ? 1000 : 400000,
+          },
+        },
+      } as never)
+    }
+    writeFileSync(transcript, recs.map((r) => JSON.stringify(r)).join('\n'))
+  })
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  function runHook(input: Record<string, unknown>): string {
+    return execFileSync('node', [HOOK], {
+      input: JSON.stringify(input),
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home },
+      timeout: 30_000,
+    })
+  }
+
+  const pendingPath = () =>
+    join(home, '.clauditor', 'journals', encodeCwd(CWD), 'pending-handoff.md')
+
+  it('asks for a handoff when the session has crossed break-even', () => {
+    const out = runHook({
+      session_id: 'e2e-0001',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    const decision = JSON.parse(out)
+    expect(decision.decision).toBe('block')
+    expect(decision.reason).toContain('cheapest moment')
+  })
+
+  it('stores the reply, which always arrives with stop_hook_active true', () => {
+    // The regression. The reply to a block is re-entrant by definition, so a
+    // capture that sits below the stop_hook_active guard never runs.
+    runHook({
+      session_id: 'e2e-0002',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+
+    const body =
+      `## Mission\nShip the thing.\n\n## Key decisions and why\n` +
+      `- Bank warm. **Why**: cold costs 20x.\n${'x'.repeat(200)}\n` +
+      `[clauditor-banked-handoff]`
+
+    runHook({
+      session_id: 'e2e-0002',
+      transcript_path: transcript,
+      stop_hook_active: true,
+      hook_event_name: 'Stop',
+      last_assistant_message: body,
+    })
+
+    expect(existsSync(pendingPath())).toBe(true)
+    const stored = readFileSync(pendingPath(), 'utf-8')
+    expect(stored).toContain('## Mission')
+    expect(stored).toContain('judgement source: banked')
+    expect(stored).not.toContain('[clauditor-banked-handoff]')
+  })
+
+  it('does not ask twice once the reply is stored', () => {
+    const input = {
+      session_id: 'e2e-0003',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(input)
+    runHook({
+      ...input,
+      stop_hook_active: true,
+      last_assistant_message: `## Mission\nDone.\n${'x'.repeat(200)}\n[clauditor-banked-handoff]`,
+    })
+
+    expect(JSON.parse(runHook(input))).toEqual({})
+  })
+
+  it('never blocks on a re-entrant invocation', () => {
+    // Blocking here is what produces an interruption loop.
+    const out = runHook({
+      session_id: 'e2e-0004',
+      transcript_path: transcript,
+      stop_hook_active: true,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out)).toEqual({})
+  })
+
+  it('ignores an ordinary reply that carries no marker', () => {
+    runHook({
+      session_id: 'e2e-0005',
+      transcript_path: transcript,
+      stop_hook_active: true,
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Here is the refactor you asked for. ' + 'y'.repeat(300),
+    })
+    expect(existsSync(pendingPath())).toBe(false)
+  })
+})

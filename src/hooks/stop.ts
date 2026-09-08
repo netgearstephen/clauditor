@@ -45,6 +45,16 @@ export async function handleStopHook(): Promise<void> {
     return
   }
 
+  // Capture BEFORE the stop_hook_active guard, and never after it.
+  //
+  // The reply we asked for arrives on a re-entrant Stop: the previous
+  // invocation blocked to request the handoff, Claude answered, and this
+  // invocation is the one carrying that answer, which means stop_hook_active
+  // is true. Capturing below the guard means the request is always made and
+  // the answer is never stored. Capturing is a write and never a block, so it
+  // is safe to run on a re-entrant invocation.
+  captureBankedHandoff(hookInput)
+
   // If stop_hook_active is true, another stop hook is already running.
   // Do not block again to prevent infinite loops.
   if (hookInput.stop_hook_active) {
@@ -57,8 +67,6 @@ export async function handleStopHook(): Promise<void> {
     pushSubagentSignals(hookInput),
     reportKnowledgeOutcomes(hookInput),
   ])
-
-  captureBankedHandoff(hookInput)
 
   // A loop is the more urgent of the two reasons to block, and blocking to
   // bank a handoff inside a loop would only add a turn to a session already
