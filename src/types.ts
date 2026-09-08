@@ -311,6 +311,20 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
  */
 export const FALLBACK_PRICING_MODEL = 'claude-fable-5-1'
 
+/**
+ * Zero-cost pricing for anything not billed by Anthropic: local models run
+ * through Ollama or LM Studio, and Claude Code's '<synthetic>' marker for
+ * records it generates itself.
+ */
+export const ZERO_PRICING: PricingConfig = {
+  model: 'non-anthropic',
+  inputPerMillion: 0,
+  outputPerMillion: 0,
+  cacheCreationPerMillion: 0,
+  cacheCreation1hPerMillion: 0,
+  cacheReadPerMillion: 0,
+}
+
 export const DEFAULT_CONFIG: ClauditorConfig = {
   pricing: MODEL_PRICING['claude-opus-5'],
   alerts: {

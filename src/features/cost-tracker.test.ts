@@ -144,9 +144,26 @@ describe('getPricingForModel', () => {
     expect(getPricingForModel('claude-sonnet-5').inputPerMillion).toBe(2.0)
   })
 
-  it('falls back to the priciest known model for unknown IDs', () => {
+  it('falls back to the priciest known model for unknown claude- IDs', () => {
     // Under-reporting is silent; over-reporting is visible and gets fixed.
-    const pricing = getPricingForModel('some-unknown-model')
+    const pricing = getPricingForModel('claude-unreleased-9')
+    expect(pricing.model).toBe('claude-fable-5-1')
+  })
+})
+
+describe('non-Anthropic models', () => {
+  it('costs a local Ollama model at zero', () => {
+    const pricing = getPricingForModel('qwen36-35b:latest')
+    expect(pricing.inputPerMillion).toBe(0)
+    expect(pricing.model).toBe('non-anthropic')
+  })
+
+  it("costs Claude Code's <synthetic> marker at zero", () => {
+    expect(getPricingForModel('<synthetic>').inputPerMillion).toBe(0)
+  })
+
+  it('still warns and uses fallback pricing for unknown claude- models', () => {
+    const pricing = getPricingForModel('claude-something-new')
     expect(pricing.model).toBe('claude-fable-5-1')
   })
 })

@@ -1,5 +1,5 @@
 import type { TokenUsage, PricingConfig, TurnMetrics } from '../types.js'
-import { MODEL_PRICING, FALLBACK_PRICING_MODEL } from '../types.js'
+import { MODEL_PRICING, FALLBACK_PRICING_MODEL, ZERO_PRICING } from '../types.js'
 
 export interface CostEstimate {
   inputCost: number
@@ -84,6 +84,12 @@ export function getPricingForModel(modelId: string): PricingConfig {
     }
   }
   if (best) return best
+
+  // Not an Anthropic model, so it costs nothing on the Anthropic bill. Local
+  // models via Ollama/LM Studio, and Claude Code's own '<synthetic>' marker for
+  // records it generates itself, both land here. Pricing them as Claude
+  // inflated every total that included a subagent on a local model.
+  if (!modelId.startsWith('claude-')) return ZERO_PRICING
 
   // Unknown model. Never fail silently: an unpriced model used to fall through
   // to mid-tier pricing, which understated real spend without any signal.
