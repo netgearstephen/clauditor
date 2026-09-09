@@ -20,6 +20,13 @@ export interface ClauditorUserConfig {
     enabled: boolean
     threshold: number
     minTurns: number
+    /**
+     * Peak context tokens a session must reach before the judgement half is
+     * banked. 200k is where the measured margin is widest: over 1,476 sessions
+     * and 87 handoffs the required reuse rate is 8.0% against 17.6% observed,
+     * while at 100k it is 9.1% against 10.2%.
+     */
+    minPeakContext: number
   }
   notifications: {
     desktop: boolean
@@ -33,6 +40,7 @@ const DEFAULTS: ClauditorUserConfig = {
     enabled: true,
     threshold: 100_000,
     minTurns: 30,
+    minPeakContext: 200_000,
   },
   notifications: {
     desktop: true,

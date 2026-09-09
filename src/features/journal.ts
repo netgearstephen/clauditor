@@ -381,28 +381,55 @@ export function breakEvenTurns(wasteFactor: number): number | null {
 }
 
 /**
+ * The largest context any single turn in the session was charged for.
+ *
+ * Peak rather than final, because a session that compacts drops back down
+ * while the document a cold rewrite would have to reconstruct does not: the
+ * saving is priced on the high-water mark. Cache writes count alongside reads
+ * because both are context the model was billed to carry.
+ */
+export function peakContextTokens(turns: TurnMetrics[]): number {
+  let peak = 0
+  for (const t of turns) {
+    const c =
+      t.usage.input_tokens +
+      t.usage.cache_read_input_tokens +
+      t.usage.cache_creation_input_tokens
+    if (c > peak) peak = c
+  }
+  return peak
+}
+
+/**
  * Should the judgement half be banked now?
  *
- * Three conditions, all necessary. Rotation has to be worth doing at all, or
- * there is nothing for a handoff to enable. The cache has to be warm, because
- * banking cold costs roughly twenty times as much for the same document and
- * adds about 23 turns to the break-even rather than about one. And it has to
- * be unbanked, because this spends a turn the user did not ask for, so it
- * happens once per session and never again.
+ * Gated on absolute peak context, not on the waste factor. Waste is last-five
+ * turn cost over first-five, so it falls below 1 as a session warms up
+ * properly and penalises exactly the long well-behaved sessions worth handing
+ * off. It answers "should you rotate", which is a different question.
+ *
+ * The threshold is absolute for a non-obvious reason. On the bare comparison,
+ * banking costs 0.1x the context and saves the 2x a cold rewrite would pay,
+ * so context size cancels and any size would do. Size only enters because
+ * writing the document has a FIXED cost (~3k output tokens at 5x) that does
+ * not scale with the session. That fixed cost is what makes a small session a
+ * bad speculative bet: measured over 1,476 sessions and 87 handoffs, the
+ * required reuse rate is 9.1% at 100k against 10.2% observed, and 8.0% at
+ * 200k against 17.6% observed. 200k is where the margin is widest.
+ *
+ * The cache still has to be warm, because cold there is no saving left to
+ * capture. And it has to be unbanked, because this spends a turn the user did
+ * not ask for, so it happens once per session and never again.
  */
 export function shouldBankHandoff(
   state: JournalState,
-  turns: number,
-  wasteFactor: number,
-  minTurns: number,
-  wasteThreshold: number,
+  peakContext: number,
+  minPeakContext: number,
   transcriptPath: string | null,
   now: number = Date.now()
 ): boolean {
   if (state.bankedAt > 0) return false
-  if (turns < minTurns) return false
-  if (wasteFactor < wasteThreshold) return false
-  if (breakEvenTurns(wasteFactor) === null) return false
+  if (peakContext < minPeakContext) return false
   return isCacheWarm(transcriptPath, now)
 }
 
@@ -415,16 +442,13 @@ export function shouldBankHandoff(
  * handoff" will reconstruct a file list from the transcript, and that
  * reconstruction is both slower and where paths and SHAs go subtly wrong.
  */
-export function bankInstruction(wasteFactor: number): string {
-  const t = breakEvenTurns(wasteFactor)
-  const turns = t === null ? 0 : Math.ceil(t)
-  const payback =
-    t === null ? 'unknown' : `about ${turns} turn${turns === 1 ? '' : 's'}`
+export function bankInstruction(peakContext: number): string {
+  const k = peakContext.toLocaleString('en-GB')
   return (
-    `clauditor: this session is costing ${wasteFactor.toFixed(1)}x what it did at the start, ` +
-    `so rotating would pay for itself in ${payback}. The prompt cache is still warm, which ` +
-    `makes this the cheapest moment in the session to write a handoff: the same document ` +
-    `costs roughly 20x more once the cache expires.\n\n` +
+    `clauditor: this session peaked at ${k} context tokens. The prompt cache is still ` +
+    `warm, which makes this the cheapest moment in the session to write a handoff: that ` +
+    `context reads back at 0.1x now, against the 2x a cold session would pay to rewrite ` +
+    `it, so the same document costs roughly twenty times more once the cache expires.\n\n` +
     `Banking one now, so it is ready if and when you rotate. Nothing is being blocked and ` +
     `the session continues normally after this.\n\n` +
     `Start with a title line, exactly this shape and nothing above it:\n\n` +

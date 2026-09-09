@@ -10,8 +10,6 @@ import type {
 import { createHash } from 'node:crypto'
 import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
-import { loadCalibration } from '../features/calibration.js'
-import { sessionWasteFactor } from '../features/cost-tracker.js'
 import {
   BANK_MARKER,
   bankInstruction,
@@ -19,6 +17,7 @@ import {
   readJournalState,
   readTurns,
   shouldBankHandoff,
+  peakContextTokens,
   writeJournal,
 } from '../features/journal.js'
 import { readStdin, outputDecision } from './shared.js'
@@ -257,7 +256,7 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
   if (!config.rotation.enabled) return null
 
   const cwd = extractCwd(input.transcript_path)
-  const { turns, model } = readTurns(input.transcript_path)
+  const { turns } = readTurns(input.transcript_path)
 
   // The mechanical half. A script over git and the transcript, no model, so
   // it runs on every Stop that changed anything and costs nothing to keep
@@ -267,16 +266,13 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
   } catch {}
 
   const state = readJournalState(cwd)
-  const cal = loadCalibration()
-  const wasteFactor = sessionWasteFactor(turns, model)
+  const peakContext = peakContextTokens(turns)
 
   if (
     !shouldBankHandoff(
       state,
-      turns.length,
-      wasteFactor,
-      cal.minTurns,
-      cal.wasteThreshold,
+      peakContext,
+      config.rotation.minPeakContext,
       input.transcript_path
     )
   ) {
@@ -287,11 +283,11 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
     type: 'context_warning',
     session: input.session_id.slice(0, 8),
     message:
-      `banking handoff at ${wasteFactor.toFixed(1)}x waste, ` +
+      `banking handoff at ${peakContext} peak context, ` +
       `${turns.length} turns, cache warm`,
   }).catch(() => {})
 
-  return { decision: 'block', reason: bankInstruction(wasteFactor) }
+  return { decision: 'block', reason: bankInstruction(peakContext) }
 }
 
 /**

@@ -64,6 +64,30 @@ describe('Stop hook banking, end to end', () => {
     })
   }
 
+  /** A transcript of `turns` assistant records whose peak context is `peak`. */
+  function transcriptWithPeak(turns: number, peak: number): string {
+    const path = join(home, `t-${turns}-${peak}.jsonl`)
+    const now = new Date().toISOString()
+    const recs: unknown[] = [{ type: 'user', cwd: CWD, timestamp: now }]
+    for (let i = 0; i < turns; i++) {
+      recs.push({
+        type: 'assistant',
+        timestamp: now,
+        message: {
+          model: 'claude-opus-5',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: i < 10 ? 1000 : peak - 10,
+          },
+        },
+      })
+    }
+    writeFileSync(path, recs.map((r) => JSON.stringify(r)).join('\n'))
+    return path
+  }
+
   const pendingPath = () =>
     join(home, '.clauditor', 'journals', encodeCwd(CWD), 'pending-handoff.md')
 
@@ -135,6 +159,41 @@ describe('Stop hook banking, end to end', () => {
       hook_event_name: 'Stop',
     })
     expect(JSON.parse(out)).toEqual({})
+  })
+
+  it('does not ask on a long session that never got large', () => {
+    // The waste-factor gate banked this one: waste is last-five-turn cost over
+    // first-five, so a busy short-context session scores high while there is
+    // almost nothing for a cold rewrite to have to pay for.
+    const out = runHook({
+      session_id: 'e2e-0010',
+      transcript_path: transcriptWithPeak(300, 40_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out)).toEqual({})
+  })
+
+  it('asks on a short session that is already large', () => {
+    // The mirror case the waste-factor gate missed: few turns, but a cold
+    // rewrite of this context is exactly what banking avoids.
+    const out = runHook({
+      session_id: 'e2e-0011',
+      transcript_path: transcriptWithPeak(12, 260_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out).decision).toBe('block')
+  })
+
+  it('names the peak context it is protecting', () => {
+    const out = runHook({
+      session_id: 'e2e-0012',
+      transcript_path: transcriptWithPeak(40, 260_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out).reason).toContain('260,000')
   })
 
   it('ignores an ordinary reply that carries no marker', () => {

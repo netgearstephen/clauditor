@@ -42,6 +42,22 @@ function writeUserHandoff(
   return path
 }
 
+/** Turns whose context sizes are exactly as given. */
+function turnsWith(...contexts: number[]) {
+  return contexts.map((c, i) => ({
+    turnIndex: i,
+    timestamp: `2026-09-08T10:0${i}:00Z`,
+    usage: {
+      input_tokens: 2,
+      output_tokens: 100,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: c - 2,
+    },
+    cacheRatio: 1,
+    toolCalls: [],
+  }))
+}
+
 describe('journal', () => {
   let tempDir: string
 
@@ -137,45 +153,80 @@ describe('journal', () => {
     })
   })
 
+  describe('peakContextTokens', () => {
+    it('is the largest context any turn was charged for', async () => {
+      const { peakContextTokens } = await importFresh(tempDir)
+      // Not the last turn: a session that compacts drops back down, and the
+      // cold rewrite it avoids is priced on the high-water mark.
+      expect(peakContextTokens(turnsWith(50_000, 240_000, 90_000))).toBe(240_000)
+    })
+
+    it('counts cache writes as context, not just reads', async () => {
+      const { peakContextTokens } = await importFresh(tempDir)
+      const turns = [
+        {
+          turnIndex: 0,
+          timestamp: '2026-09-08T10:00:00Z',
+          usage: {
+            input_tokens: 1_000,
+            output_tokens: 10,
+            cache_creation_input_tokens: 199_000,
+            cache_read_input_tokens: 0,
+          },
+          cacheRatio: 0,
+          toolCalls: [],
+        },
+      ]
+      expect(peakContextTokens(turns)).toBe(200_000)
+    })
+
+    it('is zero for a session with no turns', async () => {
+      const { peakContextTokens } = await importFresh(tempDir)
+      expect(peakContextTokens([])).toBe(0)
+    })
+  })
+
   describe('shouldBankHandoff', () => {
     const fresh = { lastWriteAt: 0, lastFingerprint: '', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+    const warm = Date.parse('2026-09-08T10:10:00Z')
 
-    it('banks once break-even is crossed and the cache is warm', async () => {
+    it('banks once peak context reaches the threshold and the cache is warm', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      const now = Date.parse('2026-09-08T10:10:00Z')
-      expect(shouldBankHandoff(fresh, 80, 2.0, 61, 1.5, path, now)).toBe(true)
+      expect(shouldBankHandoff(fresh, 200_000, 200_000, path, warm)).toBe(true)
+    })
+
+    it('does not bank below the threshold', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      // Measured over 1,476 sessions: below ~200k the fixed cost of writing
+      // the document outruns the 1.9x saved on the context it avoids
+      // rewriting, so banking every such session loses tokens overall.
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      expect(shouldBankHandoff(fresh, 199_999, 200_000, path, warm)).toBe(false)
+    })
+
+    it('banks a short session that is already huge', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      // Turn count is not the gate. What a cold rewrite would cost depends on
+      // context size alone, and a few enormous file reads get there fast.
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, warm)).toBe(true)
     })
 
     it('never banks twice in a session', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      const now = Date.parse('2026-09-08T10:10:00Z')
       const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 70 }
-      expect(shouldBankHandoff(banked, 200, 9.0, 61, 1.5, path, now)).toBe(false)
+      expect(shouldBankHandoff(banked, 400_000, 200_000, path, warm)).toBe(false)
     })
 
     it('does not bank once the cache is cold', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
-      // The whole point of banking early: cold, the same document costs
-      // roughly 20x more and adds ~23 turns to break-even instead of ~1.
+      // The whole point of banking early: cold, the same document costs 2x on
+      // the context instead of 0.1x, and there is nothing left to save.
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
       const cold = Date.parse('2026-09-08T11:30:00Z')
-      expect(shouldBankHandoff(fresh, 80, 2.0, 61, 1.5, path, cold)).toBe(false)
-    })
-
-    it('does not bank a short session', async () => {
-      const { shouldBankHandoff } = await importFresh(tempDir)
-      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      const now = Date.parse('2026-09-08T10:10:00Z')
-      expect(shouldBankHandoff(fresh, 10, 9.0, 61, 1.5, path, now)).toBe(false)
-    })
-
-    it('does not bank below the waste threshold', async () => {
-      const { shouldBankHandoff } = await importFresh(tempDir)
-      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      const now = Date.parse('2026-09-08T10:10:00Z')
-      expect(shouldBankHandoff(fresh, 200, 1.2, 61, 1.5, path, now)).toBe(false)
+      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, cold)).toBe(false)
     })
   })
 
@@ -440,7 +491,7 @@ describe('journal', () => {
   describe('bankInstruction', () => {
     it('asks only for the sections the facts script cannot produce', async () => {
       const { bankInstruction } = await importFresh(tempDir)
-      const text = bankInstruction(2.5)
+      const text = bankInstruction(250_000)
 
       expect(text).toContain('## Key decisions and why')
       expect(text).toContain('## Dead ends')
@@ -451,9 +502,12 @@ describe('journal', () => {
       expect(text).not.toContain('## Required reading')
     })
 
-    it('tells the user what rotating would save', async () => {
+    it('states the saving in terms of the context it protects', async () => {
       const { bankInstruction } = await importFresh(tempDir)
-      expect(bankInstruction(2.0)).toContain('about 20 turns')
+      const text = bankInstruction(250_000)
+      expect(text).toContain('250,000')
+      // The saving is the 1.9x spread between a warm read and a cold rewrite.
+      expect(text).not.toContain('waste')
     })
   })
 })
