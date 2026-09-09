@@ -153,8 +153,8 @@ describe('Stop hook banking, end to end', () => {
     expect(JSON.parse(out).decision).toBe('block')
   }, 30_000)
 
-  it('asks for a file, and adopts it without the reply carrying the handoff', () => {
-    // The point of the file: what the user sees in the terminal is one line,
+  it('asks for a file in the user\'s handoffs directory, and adopts what was written', () => {
+    // The point of the file: what the user sees is a prompt they can paste,
     // not the whole document recited back at them.
     const request = {
       session_id: 'e2e-written',
@@ -163,26 +163,56 @@ describe('Stop hook banking, end to end', () => {
       hook_event_name: 'Stop',
     }
     const reason = JSON.parse(runHook(request)).reason as string
-    expect(reason).toContain(pendingPath())
+    expect(reason).toContain(join(home, '.claude', 'handoffs'))
+    expect(reason).toContain('Continue a paused task. Read `<path>` in full')
 
     // Stand in for the model's Write call on the blocked turn.
-    mkdirSync(dirname(pendingPath()), { recursive: true })
+    const written = join(home, '.claude', 'handoffs', 'ship-the-thing-20260909-1400.md')
+    mkdirSync(dirname(written), { recursive: true })
     writeFileSync(
-      pendingPath(),
-      `# Handoff: Written to disk\n\n## Mission\nShip the thing.\n${'x'.repeat(200)}\n`
+      written,
+      `# Handoff: Ship the thing\n\n## Mission\nShip the thing.\n${'x'.repeat(200)}\n`
     )
 
     runHook({
       ...request,
       stop_hook_active: true,
-      last_assistant_message: 'Banked the handoff.\n[clauditor-banked-handoff]',
+      last_assistant_message:
+        `Continue a paused task. Read \`${written}\` in full before doing anything else. ` +
+        `\n[clauditor-banked-handoff]`,
     })
 
-    const stored = readFileSync(pendingPath(), 'utf-8')
+    const stored = readFileSync(written, 'utf-8')
     expect(stored).toContain('judgement source: banked')
-    expect(stored).toContain('Written to disk')
-    // And the request is answered: no second ask.
+    expect(stored).toContain('Ship the thing')
+    // Nothing left behind in clauditor's own directory to diverge from it.
+    expect(existsSync(pendingPath())).toBe(false)
+    // And the request is answered: no second ask at the same size.
     expect(JSON.parse(runHook(request))).toEqual({})
+  }, 30_000)
+
+  it('re-banks into the same file once the session has grown a long way', () => {
+    const request = {
+      session_id: 'e2e-regrown',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(request)
+    const written = join(home, '.claude', 'handoffs', 'first-20260909-1400.md')
+    mkdirSync(dirname(written), { recursive: true })
+    writeFileSync(written, `# Handoff: First\n\n## Mission\nAt 400k.\n${'x'.repeat(200)}\n`)
+    runHook({
+      ...request,
+      stop_hook_active: true,
+      last_assistant_message: `Read \`${written}\`\n[clauditor-banked-handoff]`,
+    })
+
+    // 400k at the bank, and the default growth step is 100k.
+    const grown = transcriptWithPeak(90, 560_000)
+    const reason = JSON.parse(runHook({ ...request, transcript_path: grown })).reason as string
+    expect(reason).toContain('Overwrite this file')
+    expect(reason).toContain(written)
   }, 30_000)
 
   it('does not bank twice when one session changes directory', () => {

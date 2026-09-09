@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 /** Each test needs a fresh import to pick up the mocked homedir. */
@@ -193,7 +193,7 @@ describe('journal', () => {
     it('banks once peak context reaches the threshold and the cache is warm', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      expect(shouldBankHandoff(fresh, 200_000, 200_000, path, 's1', warm)).toBe(true)
+      expect(shouldBankHandoff(fresh, 200_000, 200_000, path, 's1', { now: warm })).toBe(true)
     })
 
     it('does not bank below the threshold', async () => {
@@ -202,7 +202,7 @@ describe('journal', () => {
       // the document outruns the 1.9x saved on the context it avoids
       // rewriting, so banking every such session loses tokens overall.
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      expect(shouldBankHandoff(fresh, 199_999, 200_000, path, 's1', warm)).toBe(false)
+      expect(shouldBankHandoff(fresh, 199_999, 200_000, path, 's1', { now: warm })).toBe(false)
     })
 
     it('banks a short session that is already huge', async () => {
@@ -210,14 +210,14 @@ describe('journal', () => {
       // Turn count is not the gate. What a cold rewrite would cost depends on
       // context size alone, and a few enormous file reads get there fast.
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', warm)).toBe(true)
+      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', { now: warm })).toBe(true)
     })
 
     it('never banks twice in a session', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
       const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 70, bankedSession: 's1' }
-      expect(shouldBankHandoff(banked, 400_000, 200_000, path, 's1', warm)).toBe(false)
+      expect(shouldBankHandoff(banked, 400_000, 200_000, path, 's1', { now: warm })).toBe(false)
     })
 
     it('does not bank once the cache is cold', async () => {
@@ -226,7 +226,7 @@ describe('journal', () => {
       // the context instead of 0.1x, and there is nothing left to save.
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
       const cold = Date.parse('2026-09-08T11:30:00Z')
-      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', cold)).toBe(false)
+      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', { now: cold })).toBe(false)
     })
   })
 
@@ -243,7 +243,7 @@ describe('journal', () => {
         bankedAtTurn: 70, bankedSession: 'session-one', promotedAt: 0,
       }
       expect(
-        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-two', warm)
+        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-two', { now: warm })
       ).toBe(true)
     })
 
@@ -260,7 +260,7 @@ describe('journal', () => {
       const elsewhere = j.readJournalState('/home/user/project-b')
       expect(elsewhere.bankedAt).toBe(0)
       expect(
-        j.shouldBankHandoff(elsewhere, 400_000, 200_000, path, 'wanderer', warm)
+        j.shouldBankHandoff(elsewhere, 400_000, 200_000, path, 'wanderer', { now: warm })
       ).toBe(false)
     })
 
@@ -278,7 +278,7 @@ describe('journal', () => {
       expect(
         j.shouldBankHandoff(
           j.readJournalState('/home/user/project-b'),
-          400_000, 200_000, path, 'wanderer', warm
+          400_000, 200_000, path, 'wanderer', { now: warm }
         )
       ).toBe(true)
     })
@@ -291,7 +291,7 @@ describe('journal', () => {
         bankedAtTurn: 70, bankedSession: 'session-one', promotedAt: 0,
       }
       expect(
-        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-one', warm)
+        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-one', { now: warm })
       ).toBe(false)
     })
   })
@@ -399,87 +399,173 @@ describe('journal', () => {
     })
   })
 
-  describe('adoptWrittenHandoff', () => {
-    const body = `# Handoff: Written to disk\n\n## Mission\n${'x'.repeat(200)}\n`
+  describe('adoptBankedHandoff', () => {
+    const judgement = `# Handoff: Written to disk\n\n## Mission\n${'x'.repeat(200)}\n`
+    const handoffs = (home: string) => join(home, '.claude', 'handoffs')
 
-    /** Stand in for the model's own Write call. */
-    const modelWrites = (j: { journalDir: (c: string) => string; pendingHandoffPath: (c: string) => string }, text = body) => {
-      mkdirSync(j.journalDir(CWD), { recursive: true })
-      writeFileSync(j.pendingHandoffPath(CWD), text)
+    /** Stand in for the model's own Write call, wherever it put the file. */
+    const modelWrites = (path: string, text = judgement) => {
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, text)
+      return path
     }
 
-    it('adopts a handoff the model wrote itself, so the reply carries none of it', async () => {
+    it('keeps the file the reply names, so the pasted prompt resolves', async () => {
       const j = await importFresh(tempDir)
       j.recordBankRequest(CWD)
-      modelWrites(j)
+      const written = modelWrites(join(handoffs(tempDir), 'written-to-disk-20260909-1400.md'))
 
-      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(true)
-      const stored = readFileSync(j.pendingHandoffPath(CWD), 'utf-8')
-      expect(stored).toContain('judgement source: banked')
-      expect(stored).toContain('## Mission')
-      expect(j.readJournalState(CWD).bankedSession).toBe('s1')
+      const adopted = j.adoptBankedHandoff(CWD, 80, {
+        sessionId: 's1',
+        peakContext: 260_000,
+        reply: `Continue a paused task. Read \`${written}\` in full before doing anything else.`,
+      })
+      expect(adopted).toBe(written)
+      expect(readFileSync(written, 'utf-8')).toContain('## Mission')
     })
 
-    it('counts as the session having paid, so it cannot bank again elsewhere', async () => {
+    it('gives the banked document the mechanical half at once', async () => {
+      const j = await importFresh(tempDir)
+      // Without facts the pasted prompt cannot ask for a verification command.
+      const repo = join(tempDir, 'repo')
+      mkdirSync(repo, { recursive: true })
+      fakeFactsScript(tempDir)
+      j.recordBankRequest(repo)
+      const written = modelWrites(join(handoffs(tempDir), 'written-to-disk-20260909-1400.md'))
+
+      j.adoptBankedHandoff(repo, 80, { sessionId: 'banked-session', reply: written })
+      expect(readFileSync(written, 'utf-8')).toContain('**Session**: banked-session')
+    })
+
+    it('finds the file even when the reply names no path', async () => {
       const j = await importFresh(tempDir)
       j.recordBankRequest(CWD)
-      modelWrites(j)
-      j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })
-      expect(j.hasSessionBanked('s1')).toBe(true)
+      const written = modelWrites(join(handoffs(tempDir), 'anything-20260909-1400.md'))
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 's1' })).toBe(written)
+    })
+
+    it('adopts from the clauditor path a stray model may have used', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      modelWrites(j.pendingHandoffPath(CWD))
+
+      const adopted = j.adoptBankedHandoff(CWD, 80, { sessionId: 's1' })
+      expect(adopted).toContain(handoffs(tempDir))
+      // One document, not one in each place.
+      expect(existsSync(j.pendingHandoffPath(CWD))).toBe(false)
+    })
+
+    it('records the peak and the path, so a re-bank can replace it', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      const written = modelWrites(join(handoffs(tempDir), 'thing-20260909-1400.md'))
+      j.adoptBankedHandoff(CWD, 80, { sessionId: 's1', peakContext: 260_000 })
+
+      expect(j.readJournalState(CWD).promotedPath).toBe(written)
+      expect(j.readSessionBank('s1')).toMatchObject({
+        peakContext: 260_000,
+        handoffPath: written,
+      })
+    })
+
+    it('a re-bank overwrites the first file rather than adding another', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      const first = modelWrites(join(handoffs(tempDir), 'thing-20260909-1400.md'))
+      j.adoptBankedHandoff(CWD, 80, { sessionId: 's1', peakContext: 260_000 })
+
+      // The model, asked again later, writes somewhere new anyway.
+      j.recordBankRequest(CWD)
+      modelWrites(
+        join(handoffs(tempDir), 'thing-20260909-1500.md'),
+        `# Handoff: Written to disk\n\n## Mission\nlater state\n${'x'.repeat(200)}\n`
+      )
+      const adopted = j.adoptBankedHandoff(CWD, 90, { sessionId: 's1', peakContext: 380_000 })
+
+      expect(adopted).toBe(first)
+      expect(readFileSync(first, 'utf-8')).toContain('later state')
+      expect(existsSync(join(handoffs(tempDir), 'thing-20260909-1500.md'))).toBe(false)
     })
 
     it('refuses a file left over from an earlier bank', async () => {
       const j = await importFresh(tempDir)
-      modelWrites(j)
-      const old = Date.now() - 60 * 60 * 1000
-      utimesSync(j.pendingHandoffPath(CWD), old / 1000, old / 1000)
+      const stale = modelWrites(join(handoffs(tempDir), 'old-20260901-0900.md'))
+      const longAgo = Date.now() - 60 * 60 * 1000
+      utimesSync(stale, longAgo / 1000, longAgo / 1000)
       j.recordBankRequest(CWD)
 
-      // Adopting this would re-bank a stale document as though it were new.
-      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(false)
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 's1' })).toBeNull()
     })
 
     it('refuses when no bank was ever asked for', async () => {
       const j = await importFresh(tempDir)
-      modelWrites(j)
-      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(false)
+      modelWrites(join(handoffs(tempDir), 'unasked-20260909-1400.md'))
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 's1' })).toBeNull()
     })
 
     it('refuses when the model answered in the reply instead', async () => {
       const j = await importFresh(tempDir)
       j.recordBankRequest(CWD)
       // Nothing written: the caller has to fall back to the message.
-      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(false)
-    })
-
-    it('keeps one provenance line however often a file is adopted', async () => {
-      const j = await importFresh(tempDir)
-      j.recordBankRequest(CWD)
-      modelWrites(j)
-      j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })
-      j.recordBankRequest(CWD)
-      j.adoptWrittenHandoff(CWD, 90, { sessionId: 's1' })
-
-      const stored = readFileSync(j.pendingHandoffPath(CWD), 'utf-8')
-      expect(stored.match(/judgement source:/g)).toHaveLength(1)
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 's1' })).toBeNull()
     })
 
     it('strips the marker if the model put it in the file', async () => {
       const j = await importFresh(tempDir)
       j.recordBankRequest(CWD)
-      modelWrites(j, `${body}\n${j.BANK_MARKER}\n`)
-      j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })
-      expect(readFileSync(j.pendingHandoffPath(CWD), 'utf-8')).not.toContain(j.BANK_MARKER)
+      const written = modelWrites(
+        join(handoffs(tempDir), 'thing-20260909-1400.md'),
+        `${judgement}\n${j.BANK_MARKER}\n`
+      )
+      j.adoptBankedHandoff(CWD, 80, { sessionId: 's1' })
+      expect(readFileSync(written, 'utf-8')).not.toContain(j.BANK_MARKER)
+    })
+
+    it('keeps one provenance line however often a file is adopted', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      const written = modelWrites(join(handoffs(tempDir), 'thing-20260909-1400.md'))
+      j.adoptBankedHandoff(CWD, 80, { sessionId: 's1' })
+      j.recordBankRequest(CWD)
+      j.adoptBankedHandoff(CWD, 90, { sessionId: 's1' })
+
+      expect(readFileSync(written, 'utf-8').match(/judgement source:/g)).toHaveLength(1)
     })
   })
 
   describe('bankInstruction', () => {
-    it('names the path to write, and asks for a one-line reply', async () => {
+    it('sends the handoff to the user\'s own directory, named from the title', async () => {
       const j = await importFresh(tempDir)
-      const instruction = j.bankInstruction(260_000, j.pendingHandoffPath(CWD))
-      expect(instruction).toContain(j.pendingHandoffPath(CWD))
-      expect(instruction).toContain('Write tool')
-      expect(instruction).toContain('do not repeat any of its content in your reply')
+      const text = j.bankInstruction(260_000, { stamp: '20260909-1400' })
+      expect(text).toContain(join(tempDir, '.claude', 'handoffs'))
+      expect(text).toContain('<slug>-20260909-1400.md')
+      expect(text).toContain('Write tool')
+    })
+
+    it('asks for the paste prompt as the whole reply', async () => {
+      const j = await importFresh(tempDir)
+      const text = j.bankInstruction(260_000, { stamp: '20260909-1400' })
+      expect(text).toContain('Continue a paused task. Read `<path>` in full')
+      expect(text).toContain('do not repeat any of its content in your reply')
+    })
+
+    it('sends a re-bank at the file the first bank produced', async () => {
+      const j = await importFresh(tempDir)
+      // The user may have pasted that path already, so it has to stay put.
+      const text = j.bankInstruction(360_000, {
+        stamp: '20260909-1500',
+        rewritePath: '/home/user/.claude/handoffs/thing-20260909-1400.md',
+      })
+      expect(text).toContain('Overwrite this file')
+      expect(text).toContain('thing-20260909-1400.md')
+      expect(text).not.toContain('<slug>')
+    })
+
+    it('asks for in-flight agents to be recorded and left alone', async () => {
+      const j = await importFresh(tempDir)
+      const text = j.bankInstruction(260_000, { stamp: '20260909-1400' })
+      expect(text).toContain('## In-flight agents')
+      expect(text).toContain('do not stop them')
     })
   })
 
@@ -562,7 +648,7 @@ describe('journal', () => {
       const now = Date.parse('2026-09-08T10:10:00Z')
       expect(
         j.shouldBankHandoff(
-          j.readJournalState(CWD), 400_000, 200_000, path, 's1', now
+          j.readJournalState(CWD), 400_000, 200_000, path, 's1', { now: now }
         )
       ).toBe(false)
     })
@@ -674,7 +760,7 @@ describe('journal', () => {
   describe('bankInstruction', () => {
     it('asks only for the sections the facts script cannot produce', async () => {
       const { bankInstruction } = await importFresh(tempDir)
-      const text = bankInstruction(250_000)
+      const text = bankInstruction(250_000, { stamp: '20260909-1400' })
 
       expect(text).toContain('## Key decisions and why')
       expect(text).toContain('## Dead ends')
@@ -687,7 +773,7 @@ describe('journal', () => {
 
     it('states the saving in terms of the context it protects', async () => {
       const { bankInstruction } = await importFresh(tempDir)
-      const text = bankInstruction(250_000)
+      const text = bankInstruction(250_000, { stamp: '20260909-1400' })
       expect(text).toContain('250,000')
       // The saving is the 1.9x spread between a warm read and a cold rewrite.
       expect(text).not.toContain('waste')

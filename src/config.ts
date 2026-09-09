@@ -25,6 +25,17 @@ export interface ClauditorUserConfig {
      * while at 100k it is 9.1% against 10.2%.
      */
     minPeakContext: number
+    /**
+     * Peak-context growth since the last bank that makes the banked judgement
+     * stale enough to be worth rewriting.
+     *
+     * A bank describes the session as it stood; work carries on immediately
+     * afterwards, so the document is out of date from the moment it is
+     * written. Re-banking at 100k of growth costs roughly 55k
+     * price-normalised units against the 8.2% break-even, and keeps the
+     * document within one growth step of current.
+     */
+    reBankGrowth: number
   }
   notifications: {
     desktop: boolean
@@ -37,6 +48,7 @@ const DEFAULTS: ClauditorUserConfig = {
   rotation: {
     enabled: true,
     minPeakContext: 200_000,
+    reBankGrowth: 100_000,
   },
   notifications: {
     desktop: true,

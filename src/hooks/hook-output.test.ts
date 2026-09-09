@@ -64,4 +64,37 @@ describe('hook stdout, end to end', () => {
     )
     expect(() => JSON.parse(out || '{}')).not.toThrow()
   }, 30_000)
+
+  it('survives a Bash response object, through the CLI as configured', () => {
+    // tool_response is an object for Bash, and this hook called string methods
+    // on it. The throw was masked for as long as the module caught its own
+    // errors; called by name from the CLI it reached Claude Code as a hook
+    // failure on every Bash call, in every session.
+    const out = execFileSync(
+      'node',
+      [resolve(__dirname, '..', '..', 'dist', 'cli.js'), 'hook', 'post-tool-use'],
+      {
+        input: JSON.stringify({
+          session_id: 'bash-object-probe',
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          cwd: home,
+          tool_input: { command: 'npm test' },
+          tool_response: {
+            stdout: Array.from({ length: 200 }, (_, i) => `line ${i} of padding`).join('\n'),
+            stderr: 'Error: something FAILED',
+            interrupted: false,
+          },
+        }),
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home },
+        timeout: 30_000,
+      }
+    )
+
+    const decision = JSON.parse(out || '{}')
+    // Reading the object at all is the fix: compression never ran for Bash.
+    expect(decision.additionalContext).toContain('output compressed from')
+  }, 30_000)
 })
+

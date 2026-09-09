@@ -86,7 +86,7 @@ async function processToolResult(input: PostToolUseHookInput): Promise<HookDecis
 
   // 1. Compress bash output if applicable
   if (input.tool_name === 'Bash') {
-    const toolResponse = input.tool_response || ''
+    const toolResponse = responseText(input.tool_response)
     if (toolResponse.length >= 500) {
       const result = compressBashOutput(toolResponse)
       if (result.compressed) {
@@ -746,6 +746,27 @@ function trackFileEdits(sessionId: string, filePath: string): string | null {
   }
 
   return null
+}
+
+/**
+ * The tool's output as text.
+ *
+ * Bash sends an object, so the string methods this hook uses on it threw. The
+ * throw was invisible for as long as the module caught its own errors and
+ * printed an empty decision; once the CLI called the handler directly, it
+ * surfaced as a hook error on every Bash call.
+ */
+function responseText(response: string | Record<string, unknown> | undefined): string {
+  if (typeof response === 'string') return response
+  if (!response) return ''
+  const parts = [response.stdout, response.stderr]
+    .filter((p): p is string => typeof p === 'string')
+  if (parts.length > 0) return parts.join('\n')
+  try {
+    return JSON.stringify(response)
+  } catch {
+    return ''
+  }
 }
 
 function formatSize(chars: number): string {

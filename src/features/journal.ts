@@ -88,6 +88,11 @@ export interface JournalState {
    * this was written by the model answering that request, rather than left
    * over from an earlier one. */
   bankRequestedAt: number
+  /** Peak context at the last bank. What growth since then is measured from. */
+  bankedAtPeak: number
+  /** The handoff file the last bank produced. Re-banks overwrite it, so a
+   * prompt the user pasted at the first bank keeps working. */
+  promotedPath: string
 }
 
 const EMPTY_STATE: JournalState = {
@@ -98,6 +103,8 @@ const EMPTY_STATE: JournalState = {
   bankedSession: '',
   promotedAt: 0,
   bankRequestedAt: 0,
+  bankedAtPeak: 0,
+  promotedPath: '',
 }
 
 /** Encode a cwd into a directory name. Mirrors session-state's encoding. */
@@ -160,23 +167,55 @@ function bankMarkerPath(sessionId: string | null): string | null {
   return resolve(BANKED_DIR, `${sessionId}.json`)
 }
 
+/** What a session's bank marker records. */
+export interface SessionBank {
+  /** Epoch ms of the bank. */
+  bankedAt: number
+  /** Where the session was when it banked. */
+  cwd: string | null
+  /** Peak context at the bank, which growth since is measured from. */
+  peakContext: number
+  /** The handoff file it produced, so a re-bank can overwrite that one. */
+  handoffPath: string
+}
+
+/** This session's bank, from any directory, or null if it has not banked. */
+export function readSessionBank(sessionId: string | null): SessionBank | null {
+  const path = bankMarkerPath(sessionId)
+  if (!path) return null
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf-8'))
+    return {
+      bankedAt: raw.bankedAt ?? 0,
+      cwd: raw.cwd ?? null,
+      peakContext: raw.peakContext ?? 0,
+      handoffPath: raw.handoffPath ?? '',
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Has this session already paid for a bank, in any directory? */
 export function hasSessionBanked(sessionId: string | null): boolean {
-  const path = bankMarkerPath(sessionId)
-  return path ? existsSync(path) : false
+  return readSessionBank(sessionId) !== null
 }
 
 /** Record that this session has paid for a bank, and prune stale markers. */
 export function markSessionBanked(
   sessionId: string | null,
   cwd: string | null,
-  now: number = Date.now()
+  now: number = Date.now(),
+  { peakContext = 0, handoffPath = '' }: { peakContext?: number; handoffPath?: string } = {}
 ): void {
   const path = bankMarkerPath(sessionId)
   if (!path) return
   try {
     mkdirSync(BANKED_DIR, { recursive: true })
-    writeFileSync(path, JSON.stringify({ bankedAt: now, cwd }, null, 2))
+    writeFileSync(
+      path,
+      JSON.stringify({ bankedAt: now, cwd, peakContext, handoffPath }, null, 2)
+    )
   } catch {
     return
   }
@@ -417,6 +456,41 @@ export type JudgementSource = 'banked' | 'compaction'
  * Verification command) are deliberately absent: those come from the script at
  * assembly time, so banking them would only create a second copy to go stale.
  */
+/**
+ * The prompt the user pastes into a fresh session to resume.
+ *
+ * Stephen's own wording, from the /handoff skill, kept identical on purpose:
+ * the two modes must be indistinguishable at the point of use, and this is
+ * the point of use. `<path>` is the only thing substituted.
+ */
+export const PASTE_PROMPT =
+  'Continue a paused task. Read `<path>` in full before doing anything else. ' +
+  'Then summarise your understanding back to me in 3 to 5 bullets and confirm the very ' +
+  'next step. Do not redo any work the file marks as complete. Do not modify anything ' +
+  'listed under "Do not touch". Run the verification command first, and if its output ' +
+  'does not match what the handoff records, stop and tell me the handoff is stale rather ' +
+  'than guessing.'
+
+/** Where a handoff with this title or mission line belongs on disk. */
+export function handoffTarget(slug: string, now: Date = new Date()): string {
+  const safeSlug =
+    slug
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'session'
+  return resolve(HANDOFFS_DIR, `${safeSlug}-${handoffStamp(now)}.md`)
+}
+
+/** Timestamp shape the handoff filenames use: YYYYMMDD-HHMM. */
+export function handoffStamp(now: Date = new Date()): string {
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return (
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+    `-${pad(now.getHours())}${pad(now.getMinutes())}`
+  )
+}
+
 const JUDGEMENT_SECTIONS = [
   'Mission',
   'Status snapshot',
@@ -469,11 +543,27 @@ export function shouldBankHandoff(
   minPeakContext: number,
   transcriptPath: string | null,
   sessionId: string | null,
-  now: number = Date.now()
+  {
+    now = Date.now(),
+    reBankGrowth = Number.POSITIVE_INFINITY,
+  }: { now?: number; reBankGrowth?: number } = {}
 ): boolean {
-  if (hasSessionBanked(sessionId)) return false
-  if (state.bankedAt > 0 && state.bankedSession === sessionId) return false
   if (peakContext < minPeakContext) return false
+
+  // Already banked, in this directory or any other. The one thing that earns a
+  // second bank is the session having grown materially since: the document
+  // describes the session as it stood, and work carried on the moment it was
+  // written. A re-bank overwrites the same file rather than adding another.
+  const bank = readSessionBank(sessionId)
+  const bankedPeak = bank?.peakContext || state.bankedAtPeak || 0
+  const banked = bank !== null || (state.bankedAt > 0 && state.bankedSession === sessionId)
+  if (banked) {
+    // A marker written before peaks were recorded cannot support the
+    // comparison, so it is left as a plain "already banked".
+    if (bankedPeak === 0) return false
+    if (peakContext < bankedPeak + reBankGrowth) return false
+  }
+
   return isCacheWarm(transcriptPath, now)
 }
 
@@ -486,22 +576,45 @@ export function shouldBankHandoff(
  * handoff" will reconstruct a file list from the transcript, and that
  * reconstruction is both slower and where paths and SHAs go subtly wrong.
  */
-export function bankInstruction(peakContext: number, handoffPath: string): string {
+export function bankInstruction(
+  peakContext: number,
+  {
+    stamp,
+    rewritePath = '',
+  }: { stamp: string; rewritePath?: string }
+): string {
   const k = peakContext.toLocaleString('en-GB')
+
+  // A re-bank has somewhere to go already: the file the first bank produced,
+  // whose path the user may have pasted somewhere. A first bank does not, and
+  // the name comes from a title only the model knows, so it is given the rule
+  // and the timestamp rather than a finished path.
+  const where = rewritePath
+    ? `Overwrite this file, which your earlier bank in this session produced, so that a ` +
+      `prompt already pasted from it keeps working:\n\n${rewritePath}\n\n`
+    : `Write the handoff with the Write tool to:\n\n` +
+      `${HANDOFFS_DIR}/<slug>-${stamp}.md\n\n` +
+      `where <slug> is your title line in lower-case kebab-case, under 40 characters, and ` +
+      `${stamp} is used exactly as given.\n\n`
+
   return (
     `clauditor: this session peaked at ${k} context tokens. The prompt cache is still ` +
     `warm, which makes this the cheapest moment in the session to write a handoff: that ` +
     `context reads back at 0.1x now, against the 2x a cold session would pay to rewrite ` +
     `it, so the same document costs roughly twenty times more once the cache expires.\n\n` +
-    `Banking one now, so it is ready if and when you rotate. Nothing is being blocked and ` +
-    `the session continues normally after this.\n\n` +
-    `Write the handoff to this exact path with the Write tool:\n\n` +
-    `${handoffPath}\n\n` +
-    `Then reply with one short line saying it is banked, and nothing else. The handoff is ` +
-    `a document for a later session to read from disk, not something the user needs to see ` +
-    `scroll past now, so do not repeat any of its content in your reply. If the Write tool ` +
-    `is not available to you on this turn, and only then, put the handoff in your reply ` +
-    `instead.\n\n` +
+    (rewritePath
+      ? `You banked earlier in this session and have grown a long way since, so that ` +
+        `document no longer describes where you are. Replacing it.\n\n`
+      : `Banking one now, so it is ready if and when you rotate. Nothing is being blocked ` +
+        `and the session continues normally after this.\n\n`) +
+    where +
+    `Then reply with EXACTLY this, on its own, with <path> replaced by the path you wrote ` +
+    `and nothing else added:\n\n` +
+    `${PASTE_PROMPT}\n\n` +
+    `That is a prompt the user pastes into a fresh session, which is the only thing they ` +
+    `need from you here. The handoff itself is a document to be read from disk later, so ` +
+    `do not repeat any of its content in your reply. If the Write tool is not available to ` +
+    `you on this turn, and only then, put the handoff in your reply instead.\n\n` +
     `Start the file with a title line, exactly this shape and nothing above it:\n\n` +
     `# Handoff: <the task, as a short name>\n\n` +
     `That title names the file, so make it a name and not a sentence: under 60 ` +
@@ -510,7 +623,12 @@ export function bankInstruction(peakContext: number, handoffPath: string): strin
     `both complete" is not.\n\n` +
     `Then write ONLY the judgement half of a handoff, using these sections and no others:\n\n` +
     JUDGEMENT_SECTIONS.map((s) => `## ${s}`).join('\n') +
-    `\n\nOmit any section with no real content rather than stubbing it. Do NOT write a ` +
+    `\n\nIf background agents or subagents are still running, add one more section, ` +
+    `## In-flight agents, naming each one, the task it was given, and how far it had got. ` +
+    `That is the one thing a later session cannot recover: their work lands after this ` +
+    `document is written. Record them and leave them running; do not stop them, and do ` +
+    `not wait for them before writing.\n\n` +
+    `Omit any section with no real content rather than stubbing it. Do NOT write a ` +
     `header block, Files touched, Required reading, or Verification command: those are ` +
     `derived mechanically at read time and anything you write there would be a second, ` +
     `staler copy.\n\n` +
@@ -546,44 +664,138 @@ export function recordBankRequest(
 }
 
 /**
- * Adopt a handoff the model wrote to the pending path itself.
+ * Adopt the handoff the model wrote in answer to a bank request.
  *
- * The preferred path, because the alternative is the model reciting the whole
- * document into the reply, where the user has to scroll past a file they did
- * not ask to read. All this has to do is add the provenance line and record
- * the bank; the content is already on disk.
+ * The document goes straight into the user's own handoffs directory, rather
+ * than waiting to be promoted when a later session resumes. That is what makes
+ * the pasted prompt usable at the moment of banking: the path it names has to
+ * exist, hold the complete document, and not move afterwards.
  *
- * Returns false if there is no file newer than the request, which covers both
- * a model that answered in the reply instead and a stale file from an earlier
- * bank. The caller then falls back to capturing from the message.
+ * Where it looks, in order: the path the reply names, the newest file in the
+ * handoffs directory written since the request, and the clauditor-owned
+ * pending path, which is where a model that ignored the instruction is likely
+ * to have put it. Returns null if none of those produced a document, and the
+ * caller falls back to capturing from the reply text.
  */
-export function adoptWrittenHandoff(
+export function adoptBankedHandoff(
   cwd: string | null,
   turns: number,
   {
     sessionId = null,
+    peakContext = 0,
+    reply = '',
     now = Date.now(),
-  }: { sessionId?: string | null; now?: number } = {}
-): boolean {
+  }: {
+    sessionId?: string | null
+    peakContext?: number
+    reply?: string
+    now?: number
+  } = {}
+): string | null {
   const state = readJournalState(cwd)
-  if (state.bankRequestedAt === 0) return false
+  if (state.bankRequestedAt === 0) return null
 
-  const path = pendingHandoffPath(cwd)
-  let written: string
-  try {
-    // A second of slack: the file is stamped by the filesystem, the request by
-    // this process, and the two clocks need not agree to the millisecond.
-    if (statSync(path).mtimeMs < state.bankRequestedAt - 1000) return false
-    written = readFileSync(path, 'utf-8')
-  } catch {
-    return false
+  // A second of slack: the file is stamped by the filesystem, the request by
+  // this process, and the two clocks need not agree to the millisecond.
+  const since = state.bankRequestedAt - 1000
+  const fresh = (path: string): boolean => {
+    try {
+      return statSync(path).mtimeMs >= since
+    } catch {
+      return false
+    }
   }
 
-  return storeJudgement(cwd, turns, written, {
-    sessionId,
-    source: 'banked',
-    now,
-  })
+  const candidates: string[] = []
+
+  // The reply names the path the user is about to paste, so if that file is
+  // there it is the one to keep, whatever else was written.
+  for (const match of reply.matchAll(/`?(\/[^\s`'"]+\.md)`?/g)) {
+    if (match[1].startsWith(HANDOFFS_DIR) && fresh(match[1])) candidates.push(match[1])
+  }
+
+  try {
+    const written = readdirSync(HANDOFFS_DIR)
+      .filter((n) => n.endsWith('.md'))
+      .map((n) => resolve(HANDOFFS_DIR, n))
+      .filter(fresh)
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+    candidates.push(...written)
+  } catch {}
+
+  if (fresh(pendingHandoffPath(cwd))) candidates.push(pendingHandoffPath(cwd))
+
+  for (const candidate of candidates) {
+    let raw: string
+    try {
+      raw = readFileSync(candidate, 'utf-8')
+    } catch {
+      continue
+    }
+    const judgement = stripPlumbing(raw)
+    if (judgement.length < 100) continue
+
+    // A re-bank overwrites the file the first bank produced, so a prompt the
+    // user has already pasted keeps naming the current document. A model that
+    // wrote to clauditor's own path instead gets the document moved where the
+    // user can find it, named from its title.
+    const target = state.promotedPath
+      ? state.promotedPath
+      : candidate.startsWith(HANDOFFS_DIR)
+        ? candidate
+        : handoffTarget(titleLine(judgement) ?? missionSlug(judgement), new Date(now))
+
+    const assembled = mergeWithFacts(
+      `<!-- judgement source: banked -->\n${judgement}`,
+      sessionId,
+      cwd
+    )
+    const document =
+      cwd && !/\*\*Repo\*\*:/.test(assembled)
+        ? `**Repo**: ${cwd}\n\n${assembled}`
+        : assembled
+
+    try {
+      mkdirSync(HANDOFFS_DIR, { recursive: true })
+      writeFileSync(target, document)
+    } catch {
+      continue
+    }
+
+    // Two documents describing one session diverge the moment either is
+    // edited, so anything the adoption did not keep is removed.
+    for (const stale of [candidate, pendingHandoffPath(cwd)]) {
+      if (stale === target) continue
+      try {
+        unlinkSync(stale)
+      } catch {}
+    }
+
+    writeJournalState(cwd, {
+      ...state,
+      bankedAt: now,
+      bankedAtTurn: turns,
+      bankedSession: sessionId ?? '',
+      bankedAtPeak: peakContext,
+      promotedPath: target,
+      // Already in the user's directory, so there is nothing left to promote.
+      promotedAt: now,
+    })
+    markSessionBanked(sessionId, cwd, now, { peakContext, handoffPath: target })
+    return target
+  }
+
+  return null
+}
+
+/** Strip the hook-to-model plumbing out of a document a person will read. */
+function stripPlumbing(text: string): string {
+  return text
+    .split('\n')
+    .filter((l) => !l.includes(BANK_MARKER))
+    .filter((l) => !/^<!--\s*judgement source:.*?-->\s*$/.test(l))
+    .join('\n')
+    .trim()
 }
 
 /**
@@ -607,12 +819,7 @@ function storeJudgement(
     now = Date.now(),
   }: { sessionId?: string | null; source?: JudgementSource; now?: number } = {}
 ): boolean {
-  const body = message
-    .split('\n')
-    .filter((l) => !l.includes(BANK_MARKER))
-    .filter((l) => !/^<!--\s*judgement source:.*?-->\s*$/.test(l))
-    .join('\n')
-    .trim()
+  const body = stripPlumbing(message)
   if (body.length < 100) return false
 
   try {
@@ -676,8 +883,24 @@ export function assembleHandoff(
   } catch {}
   if (!judgement) return null
 
+  return mergeWithFacts(judgement, sessionId, cwd)
+}
+
+/**
+ * Put the mechanical half into a judgement document.
+ *
+ * Shared by the two routes that need it: assembly at read time, and banking,
+ * which now merges immediately because the file it produces is one the user
+ * may paste a prompt for straight away. A document with no facts cannot
+ * answer "run the verification command first".
+ */
+export function mergeWithFacts(
+  judgement: string,
+  sessionId: string | null,
+  cwd: string | null
+): string {
   // The facts belong to the session that banked the judgement, not to whoever
-  // is assembling it. Assembly runs in a later session whose own transcript
+  // is assembling it. Assembly can run in a later session whose own transcript
   // holds none of the work this document describes: regenerated under that id,
   // the header would name the wrong session and the file lists would come back
   // empty. The passed id is the fallback for state banked before it was
@@ -734,17 +957,7 @@ export function promoteHandoff(
     assembled = `**Repo**: ${cwd}\n\n${assembled}`
   }
 
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  const stamp =
-    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
-    `-${pad(now.getHours())}${pad(now.getMinutes())}`
-  const safeSlug =
-    slug
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40) || 'session'
-  const target = resolve(HANDOFFS_DIR, `${safeSlug}-${stamp}.md`)
+  const target = handoffTarget(slug, now)
 
   try {
     mkdirSync(HANDOFFS_DIR, { recursive: true })

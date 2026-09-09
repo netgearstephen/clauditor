@@ -10,10 +10,10 @@ import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
 import {
   BANK_MARKER,
-  adoptWrittenHandoff,
+  adoptBankedHandoff,
   bankInstruction,
   capturePendingHandoff,
-  pendingHandoffPath,
+  handoffStamp,
   readJournalState,
   recordBankRequest,
   readTurns,
@@ -270,7 +270,8 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
       peakContext,
       config.rotation.minPeakContext,
       input.transcript_path,
-      input.session_id
+      input.session_id,
+      { reBankGrowth: config.rotation.reBankGrowth }
     )
   ) {
     return null
@@ -284,13 +285,16 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
       `${turns.length} turns, cache warm`,
   }).catch(() => {})
 
-  // Stamped before the request goes out, so a file at the pending path
-  // afterwards is known to be this request's answer.
+  // Stamped before the request goes out, so a file appearing afterwards is
+  // known to be this request's answer.
   recordBankRequest(cwd)
 
   return {
     decision: 'block',
-    reason: bankInstruction(peakContext, pendingHandoffPath(cwd)),
+    reason: bankInstruction(peakContext, {
+      stamp: handoffStamp(),
+      rewritePath: state.promotedPath,
+    }),
   }
 }
 
@@ -309,14 +313,20 @@ function captureBankedHandoff(input: StopHookInput): void {
   const cwd = extractCwd(input.transcript_path)
   const { turns } = readTurns(input.transcript_path)
 
-  // Preferred: the model wrote the document itself and said so in one line.
-  // Falling back to the reply covers the turn where the Write tool was not
-  // available, at the cost of the whole handoff appearing in the terminal.
-  if (adoptWrittenHandoff(cwd, turns.length, { sessionId: input.session_id })) {
+  // Preferred: the model wrote the document itself and replied with only the
+  // prompt the user can paste. Falling back to the reply covers the turn where
+  // the Write tool was not available, at the cost of the whole handoff
+  // appearing in the terminal.
+  const adopted = adoptBankedHandoff(cwd, turns.length, {
+    sessionId: input.session_id,
+    peakContext: peakContextTokens(turns),
+    reply: msg,
+  })
+  if (adopted) {
     logActivity({
       type: 'context_warning',
       session: input.session_id.slice(0, 8),
-      message: 'banked handoff judgement (written to file, not inlined)',
+      message: `banked handoff to ${adopted}`,
     }).catch(() => {})
     return
   }

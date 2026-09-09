@@ -35,6 +35,28 @@ export function isHookEntry(name: string): boolean {
 }
 
 /**
+ * Run a hook handler so that a throw can never break the tool call.
+ *
+ * The module-level invocation has always caught its own errors, written an
+ * empty decision and exited 0. The CLI, which calls handlers by name, needs
+ * the same net: without it a bug inside a handler reaches Claude Code as a
+ * failed hook on every tool call, which is how a latent Bash crash became
+ * visible noise in unrelated sessions.
+ */
+export async function runHookSafely(
+  name: string,
+  handler: () => Promise<void>
+): Promise<void> {
+  try {
+    await handler()
+  } catch (err) {
+    process.stderr.write(`clauditor ${name} hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  }
+}
+
+/**
  * Write hook decision to stdout.
  */
 export function outputDecision(decision: HookDecision): void {

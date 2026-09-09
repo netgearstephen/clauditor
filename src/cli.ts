@@ -1621,7 +1621,8 @@ hookCmd
   .description('Stop hook handler')
   .action(async () => {
     const { handleStopHook } = await import('./hooks/stop.js')
-    await handleStopHook()
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('stop', handleStopHook)
   })
 
 hookCmd
@@ -1629,7 +1630,8 @@ hookCmd
   .description('PostToolUse hook handler')
   .action(async () => {
     const { handlePostToolUseHook } = await import('./hooks/post-tool-use.js')
-    await handlePostToolUseHook()
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('post-tool-use', handlePostToolUseHook)
   })
 
 hookCmd
@@ -1637,7 +1639,8 @@ hookCmd
   .description('PreToolUse hook handler')
   .action(async () => {
     const { handlePreToolUseHook } = await import('./hooks/pre-tool-use.js')
-    await handlePreToolUseHook()
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('pre-tool-use', handlePreToolUseHook)
   })
 
 hookCmd
@@ -1645,7 +1648,8 @@ hookCmd
   .description('UserPromptSubmit hook handler — blocks oversized sessions')
   .action(async () => {
     const { handleUserPromptSubmitHook } = await import('./hooks/user-prompt-submit.js')
-    await handleUserPromptSubmitHook()
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('user-prompt-submit', handleUserPromptSubmitHook)
   })
 
 hookCmd
@@ -1653,7 +1657,8 @@ hookCmd
   .description('PreCompact hook handler — saves context before compaction')
   .action(async () => {
     const { handlePreCompactHook } = await import('./hooks/pre-compact.js')
-    await handlePreCompactHook()
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('pre-compact', handlePreCompactHook)
   })
 
 hookCmd
@@ -1661,7 +1666,8 @@ hookCmd
   .description('PostCompact hook handler — captures Claude\'s own session summary')
   .action(async () => {
     const { handlePostCompactHook } = await import('./hooks/post-compact.js')
-    await handlePostCompactHook()
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('post-compact', handlePostCompactHook)
   })
 
 hookCmd
@@ -1669,7 +1675,8 @@ hookCmd
   .description('SessionStart hook handler')
   .action(async () => {
     const { handleSessionStartHook } = await import('./hooks/session-start.js')
-    await handleSessionStartHook()
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('session-start', handleSessionStartHook)
   })
 
 // ─── Config loader ───────────────────────────────────────────────

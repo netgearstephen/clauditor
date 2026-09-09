@@ -209,7 +209,12 @@ export interface PostToolUseHookInput {
   hook_event_name: 'PostToolUse'
   tool_name: string
   tool_input: Record<string, unknown>
-  tool_response: string
+  /**
+   * What the tool returned. A string for some tools, an object for others:
+   * Bash sends { stdout, stderr, interrupted }. Declared as a string alone,
+   * this crashed every Bash PostToolUse on `toolResponse.includes`.
+   */
+  tool_response: string | Record<string, unknown>
   cwd?: string
 }
 
