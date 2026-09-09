@@ -2,7 +2,8 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { SessionState } from '../types.js'
 import { estimateCost, getPricingForModel } from '../features/cost-tracker.js'
-import { loadCalibration } from '../features/calibration.js'
+import { peakContextTokens } from '../features/journal.js'
+import { readConfig } from '../config.js'
 
 interface DashboardProps {
   session: SessionState
@@ -13,34 +14,17 @@ export function Dashboard({ session }: DashboardProps) {
   const cost = estimateCost(session.totalUsage, pricing)
   const modelShort = session.model?.replace('claude-', '').split('-2')[0] || 'unknown'
 
-  // Calculate waste factor: current tokens/turn vs baseline (first 5 turns)
-  const turnTokens = session.turns.map((t) =>
-    t.usage.input_tokens + t.usage.output_tokens +
-    t.usage.cache_creation_input_tokens + t.usage.cache_read_input_tokens
-  )
+  // Peak context against the banking gate. Peak rather than current, because
+  // a session that compacts drops back down while the cold rewrite a handoff
+  // avoids is still priced on the high-water mark.
+  const peak = peakContextTokens(session.turns)
+  const gate = readConfig().rotation.minPeakContext
+  const banked = peak >= gate
 
-  const baseline = turnTokens.length >= 5
-    ? turnTokens.slice(0, 5).reduce((a, b) => a + b, 0) / 5
-    : turnTokens.length > 0
-      ? turnTokens.slice(0, turnTokens.length).reduce((a, b) => a + b, 0) / turnTokens.length
-      : 0
-
-  const current = turnTokens.length >= 5
-    ? turnTokens.slice(-5).reduce((a, b) => a + b, 0) / 5
-    : baseline
-
-  const wasteFactor = baseline > 0 ? Math.round(current / baseline) : 1
-  const cal = loadCalibration()
-  const willBlock = wasteFactor >= cal.wasteThreshold && session.turns.length >= cal.minTurns
-
-  // Waste bar: 1x = empty, 10x = full (block threshold)
   const barWidth = 30
-  const barPct = Math.min(1, (wasteFactor - 1) / (cal.wasteThreshold - 1)) // 1x=0%, threshold=100%
-  const filled = Math.round(barPct * barWidth)
-  const empty = barWidth - filled
-  const wasteBar = '█'.repeat(filled) + '░'.repeat(empty)
-  const warningZone = Math.round(cal.wasteThreshold * 0.7)
-  const barColor = willBlock ? 'red' : wasteFactor >= warningZone ? 'yellow' : 'green'
+  const filled = Math.round(Math.min(1, peak / gate) * barWidth)
+  const peakBar = '█'.repeat(filled) + '░'.repeat(barWidth - filled)
+  const barColor = banked ? 'green' : peak >= gate * 0.7 ? 'yellow' : 'blue'
 
   // Cache status
   const cacheRatio = session.cacheHealth.lastCacheRatio
@@ -57,23 +41,21 @@ export function Dashboard({ session }: DashboardProps) {
         </Text>
       </Box>
 
-      {/* Waste factor — the one number that matters */}
+      {/* Peak context — what decides whether a handoff gets banked */}
       <Box flexDirection="column" marginBottom={1}>
         <Text>
-          <Text bold>Waste factor: {wasteFactor}x</Text>
+          <Text bold>Peak context: {(peak / 1000).toFixed(0)}k</Text>
           {'  '}
-          {willBlock ? (
-            <Text color="red" bold>BLOCKED — start a fresh session</Text>
-          ) : wasteFactor >= 7 ? (
-            <Text color="yellow">approaching rotation</Text>
+          {banked ? (
+            <Text color="green" bold>handoff banked while warm</Text>
           ) : (
-            <Text color="green">efficient</Text>
+            <Text color="blue">below the {(gate / 1000).toFixed(0)}k banking gate</Text>
           )}
         </Text>
-        <Text color={barColor}>{wasteBar}</Text>
+        <Text color={barColor}>{peakBar}</Text>
         <Text dimColor>
-          Started at {(baseline / 1000).toFixed(0)}k/turn → now {(current / 1000).toFixed(0)}k/turn
-          {wasteFactor > 1 ? ` (${wasteFactor}x more quota per turn)` : ''}
+          A handoff is banked once at {(gate / 1000).toFixed(0)}k, read back at 0.1x
+          rather than rewritten at 2x. Nothing is ever blocked.
         </Text>
       </Box>
 
@@ -106,9 +88,9 @@ export function Dashboard({ session }: DashboardProps) {
       {session.turns.length < 10 && (
         <Box marginTop={1}>
           <Text dimColor>
-            clauditor tracks tokens/turn as your session grows.{'\n'}
-            At {cal.wasteThreshold}x waste ({cal.minTurns}+ turns), it saves context and blocks.{' '}
-            {cal.confident ? '(auto-calibrated from your history)' : '(will auto-calibrate after more sessions)'}
+            clauditor tracks the peak context this session has been billed for.{'\n'}
+            At {(gate / 1000).toFixed(0)}k it spends one warm turn banking a handoff, so
+            one is ready if you rotate. It never blocks.
           </Text>
         </Box>
       )}

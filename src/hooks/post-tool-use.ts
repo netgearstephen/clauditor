@@ -13,7 +13,6 @@ import { detectResumeAnomaly } from '../features/resume-detector.js'
 import { estimateQuotaBurnRate } from '../features/quota-burn.js'
 import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
-import { loadCalibration } from '../features/calibration.js'
 import { readStdin, outputDecision, writeJsonFileAtomic, readJsonFile } from './shared.js'
 import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from '../features/cost-tracker.js'
 

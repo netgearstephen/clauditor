@@ -123,14 +123,12 @@ export async function installHooks(claudeDir?: string): Promise<string[]> {
   const { writeConfigIfMissing } = await import('./config.js')
   writeConfigIfMissing()
 
-  // Auto-calibrate from session history
-  const { calibrate } = await import('./features/calibration.js')
-  const cal = calibrate()
-  if (cal.confident) {
-    messages.push(`Session rotation: ✓ calibrated — blocks at ${cal.wasteThreshold}x waste, ${cal.minTurns}+ turns (from ${cal.sessionsAnalyzed} sessions)`)
-  } else {
-    messages.push(`Session rotation: ✓ enabled — using conservative 10x threshold (will auto-calibrate after more sessions)`)
-  }
+  const { readConfig } = await import('./config.js')
+  const gate = readConfig().rotation.minPeakContext
+  messages.push(
+    `Session handoffs: ✓ enabled — banks one warm handoff per session once ` +
+    `peak context reaches ${(gate / 1000).toFixed(0)}k. Never blocks.`
+  )
 
   return messages
 }

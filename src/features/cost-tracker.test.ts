@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { estimateCost, getPricingForModel } from './cost-tracker.js'
+import { estimateCost, getPricingForModel, contextTokens } from './cost-tracker.js'
 import { MODEL_PRICING } from '../types.js'
 import type { TokenUsage } from '../types.js'
 
@@ -165,5 +165,35 @@ describe('non-Anthropic models', () => {
   it('still warns and uses fallback pricing for unknown claude- models', () => {
     const pricing = getPricingForModel('claude-something-new')
     expect(pricing.model).toBe('claude-fable-5-1')
+  })
+})
+
+describe('contextTokens', () => {
+  const usage: TokenUsage = {
+    input_tokens: 1_000,
+    output_tokens: 500,
+    cache_creation_input_tokens: 9_000,
+    cache_read_input_tokens: 190_000,
+  }
+
+  it('sums the three input classes', () => {
+    expect(contextTokens(usage)).toBe(200_000)
+  })
+
+  it('excludes output, unlike rawTurnTokens', () => {
+    // The distinction is load-bearing. Context is what the model was billed to
+    // carry in, so a cold rewrite is priced on it; output is not re-read.
+    expect(contextTokens(usage)).not.toBe(200_500)
+  })
+
+  it('is zero for an unused turn', () => {
+    expect(
+      contextTokens({
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      })
+    ).toBe(0)
   })
 })

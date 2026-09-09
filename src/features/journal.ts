@@ -11,27 +11,23 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import type { TurnMetrics, TokenUsage } from '../types.js'
+import { contextTokens } from './cost-tracker.js'
 
 /**
  * Two-mode session summary.
  *
- * A session gets ONE summary, produced one of two ways. The mechanical mode
- * is a script over git and the transcript: free, deterministic, rewritten
- * whenever the session moves. The augmented mode is the same facts with a
- * layer of judgement (decisions and why, dead ends, gotchas) that only the
- * model can supply.
+ * A session gets ONE summary, produced one of two ways. The mechanical mode is
+ * a script over git and the transcript: free, deterministic, rewritten
+ * whenever the session moves. The augmented mode is the same facts plus
+ * judgement (decisions and why, dead ends, gotchas) only the model can supply.
  *
- * The two are not alternatives that drift apart. The augmented summary IS the
- * mechanical one with judgement spliced in, and both call the same script for
- * the mechanical half, so there is no second implementation to fall behind.
+ * They cannot drift: the augmented summary IS the mechanical one with
+ * judgement spliced in, and both call the same script for the mechanical half.
  *
- * The judgement half is expensive: producing it costs a model turn over the
- * whole session context. What that turn costs depends entirely on whether the
- * prompt cache is still alive. Warm, the context is read at 0.1x. Cold, it is
- * rewritten at 2x. That is a 20x spread on the same work, so the judgement
- * half is banked while the cache is warm and never regenerated cold. The
- * mechanical half, being free, is regenerated at read time instead of stored
- * stale.
+ * Judgement costs a model turn over the whole context, read at 0.1x warm and
+ * rewritten at 2x cold. That 20x spread is why it is banked warm and never
+ * regenerated cold, while the free mechanical half is regenerated at read time
+ * rather than stored stale.
  */
 
 const CLAUDITOR_DIR = resolve(homedir(), '.clauditor')
@@ -52,6 +48,12 @@ const FACTS_SCRIPT = resolve(
  * Prompt cache TTL. Sessions here run on the 1-hour cache: measured across 400
  * sessions, dropping to 5m would save $354 on cheaper writes and lose $1,717
  * to expiry re-writes.
+ *
+ * This constant is a stand-in. Claude Code hands statusline scripts a real
+ * `prompt_cache.expires_at` and `prompt_cache.ttl`, which would remove the
+ * guess entirely, but whether hook payloads carry the same object is
+ * unconfirmed. Confirm that before trusting this number further: it is
+ * re-derived here rather than read from the source of truth.
  */
 export const CACHE_TTL_MS = 60 * 60 * 1000
 
@@ -207,10 +209,7 @@ export function readTurns(transcriptPath: string): {
         cache_read_input_tokens: u.cache_read_input_tokens || 0,
         cache_creation: u.cache_creation,
       }
-      const billed =
-        usage.input_tokens +
-        usage.cache_creation_input_tokens +
-        usage.cache_read_input_tokens
+      const billed = contextTokens(usage)
       turns.push({
         turnIndex: turns.length,
         timestamp: r.timestamp || '',
@@ -378,37 +377,25 @@ const JUDGEMENT_SECTIONS = [
  * because both are context the model was billed to carry.
  */
 export function peakContextTokens(turns: TurnMetrics[]): number {
-  let peak = 0
-  for (const t of turns) {
-    const c =
-      t.usage.input_tokens +
-      t.usage.cache_read_input_tokens +
-      t.usage.cache_creation_input_tokens
-    if (c > peak) peak = c
-  }
-  return peak
+  return turns.reduce((peak, t) => Math.max(peak, contextTokens(t.usage)), 0)
 }
 
 /**
  * Should the judgement half be banked now?
  *
- * Gated on absolute peak context, not on the waste factor. Waste is last-five
- * turn cost over first-five, so it falls below 1 as a session warms up
- * properly and penalises exactly the long well-behaved sessions worth handing
- * off. It answers "should you rotate", which is a different question.
+ * Not the waste factor: that is last-five-turn cost over first-five, so it
+ * falls below 1 as a session warms up and penalises the long well-behaved
+ * sessions worth handing off. It answers whether to rotate, a different
+ * question.
  *
- * The threshold is absolute for a non-obvious reason. On the bare comparison,
- * banking costs 0.1x the context and saves the 2x a cold rewrite would pay,
- * so context size cancels and any size would do. Size only enters because
- * writing the document has a FIXED cost (~3k output tokens at 5x) that does
- * not scale with the session. That fixed cost is what makes a small session a
- * bad speculative bet: measured over 1,476 sessions and 87 handoffs, the
- * required reuse rate is 9.1% at 100k against 10.2% observed, and 8.0% at
- * 200k against 17.6% observed. 200k is where the margin is widest.
+ * Absolute for a non-obvious reason. Banking costs 0.1x the context and saves
+ * the 2x a cold rewrite pays, so size cancels; it enters only because writing
+ * costs a fixed ~3k output tokens at 5x, which is what makes a small session a
+ * bad bet. Over 1,476 sessions and 87 handoffs, 200k needs an 8.0% reuse rate
+ * against 17.6% observed, and is where that margin is widest.
  *
- * The cache still has to be warm, because cold there is no saving left to
- * capture. And it has to be unbanked, because this spends a turn the user did
- * not ask for, so it happens once per session and never again.
+ * Warm because cold there is no saving left, and once per session because it
+ * spends a turn the user did not ask for.
  */
 export function shouldBankHandoff(
   state: JournalState,
@@ -527,14 +514,9 @@ export function assembleHandoff(
   }
   if (!facts) return judgement
 
-  // Provenance, title, facts, then the rest of the judgement. This is the
-  // order a hand-written handoff uses, so both modes produce the same document
-  // shape and neither is recognisable as the machine-written one.
-  //
-  // The provenance comment and the title are both lifted out of the stored
-  // judgement rather than left where they sit. Left alone they land between
-  // the header block and the first section, which reads as though a section is
-  // missing.
+  // The order a hand-written handoff uses, so neither mode is recognisable as
+  // the machine-written one. Title and provenance are lifted out of the stored
+  // judgement: left in place they read as a missing section.
   const title = titleLine(judgement)
   const provenance = judgement.match(/^<!--\s*judgement source:.*?-->\s*$/m)?.[0] ?? null
 
@@ -567,10 +549,8 @@ export function promoteHandoff(
   if (!assembled) return null
   slug = slug ?? missionSlug(assembled)
 
-  // A handoff is matched back to its repo by this line. Assembly normally gets
-  // it from the facts script, but if the script could not run the document
-  // would be judgement alone, and a promoted handoff with no Repo line is one
-  // nothing can ever find again.
+  // A handoff is matched back to its repo by this line, normally supplied by
+  // the facts script. Promoted without it, nothing can ever find it again.
   if (cwd && !/\*\*Repo\*\*:/.test(assembled)) {
     assembled = `**Repo**: ${cwd}\n\n${assembled}`
   }

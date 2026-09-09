@@ -18,8 +18,6 @@ export interface ProjectHubConfig {
 export interface ClauditorUserConfig {
   rotation: {
     enabled: boolean
-    threshold: number
-    minTurns: number
     /**
      * Peak context tokens a session must reach before the judgement half is
      * banked. 200k is where the measured margin is widest: over 1,476 sessions
@@ -38,8 +36,6 @@ export interface ClauditorUserConfig {
 const DEFAULTS: ClauditorUserConfig = {
   rotation: {
     enabled: true,
-    threshold: 100_000,
-    minTurns: 30,
     minPeakContext: 200_000,
   },
   notifications: {

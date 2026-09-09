@@ -30,25 +30,7 @@ describe('Stop hook banking, end to end', () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'clauditor-bank-e2e-'))
-    transcript = join(home, 'transcript.jsonl')
-    const now = new Date().toISOString()
-    const recs = [{ type: 'user', cwd: CWD, timestamp: now }]
-    for (let i = 0; i < 70; i++) {
-      recs.push({
-        type: 'assistant',
-        timestamp: now,
-        message: {
-          model: 'claude-opus-5',
-          usage: {
-            input_tokens: 10,
-            output_tokens: 20,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: i < 10 ? 1000 : 400000,
-          },
-        },
-      } as never)
-    }
-    writeFileSync(transcript, recs.map((r) => JSON.stringify(r)).join('\n'))
+    transcript = transcriptWithPeak(70, 400_000)
   })
 
   afterEach(() => {
