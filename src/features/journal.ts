@@ -90,6 +90,15 @@ export interface JournalState {
   bankRequestedAt: number
   /** Peak context at the last bank. What growth since then is measured from. */
   bankedAtPeak: number
+  /** Peak context when a bank was last asked for. An unanswered request is
+   * held to the same growth rule as a completed one, so an interrupted or
+   * declined request does not re-fire at every stop for the rest of the
+   * session. */
+  bankRequestedAtPeak: number
+  /** Session the request was put to. The state file is per directory, so
+   * without this a request left unanswered by one session would silence the
+   * next session's bank in the same repo. */
+  bankRequestedSession: string
   /** The handoff file the last bank produced. Re-banks overwrite it, so a
    * prompt the user pasted at the first bank keeps working. */
   promotedPath: string
@@ -104,6 +113,8 @@ const EMPTY_STATE: JournalState = {
   promotedAt: 0,
   bankRequestedAt: 0,
   bankedAtPeak: 0,
+  bankRequestedAtPeak: 0,
+  bankRequestedSession: '',
   promotedPath: '',
 }
 
@@ -564,6 +575,19 @@ export function shouldBankHandoff(
     if (peakContext < bankedPeak + reBankGrowth) return false
   }
 
+  // A request that was never answered counts too. The model normally answers,
+  // because the request blocks the Stop event, but a user who interrupts
+  // leaves it unanswered, and without this the request fires again at every
+  // stop for the rest of the session. Held to the same growth rule, so a
+  // session that has moved on a long way may ask once more.
+  if (
+    state.bankRequestedAt > 0 &&
+    state.bankRequestedSession === sessionId &&
+    peakContext < state.bankRequestedAtPeak + reBankGrowth
+  ) {
+    return false
+  }
+
   return isCacheWarm(transcriptPath, now)
 }
 
@@ -654,13 +678,20 @@ export function bankInstruction(
  */
 export function recordBankRequest(
   cwd: string | null,
-  now: number = Date.now()
+  now: number = Date.now(),
+  peakContext = 0,
+  sessionId: string | null = null
 ): void {
   try {
     mkdirSync(journalDir(cwd), { recursive: true })
   } catch {}
   const state = readJournalState(cwd)
-  writeJournalState(cwd, { ...state, bankRequestedAt: now })
+  writeJournalState(cwd, {
+    ...state,
+    bankRequestedAt: now,
+    bankRequestedAtPeak: peakContext,
+    bankRequestedSession: sessionId ?? '',
+  })
 }
 
 /**

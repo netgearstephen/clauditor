@@ -287,7 +287,7 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
 
   // Stamped before the request goes out, so a file appearing afterwards is
   // known to be this request's answer.
-  recordBankRequest(cwd)
+  recordBankRequest(cwd, Date.now(), peakContext, input.session_id)
 
   return {
     decision: 'block',

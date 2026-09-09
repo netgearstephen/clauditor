@@ -230,6 +230,55 @@ describe('journal', () => {
     })
   })
 
+  describe('an unanswered bank request', () => {
+    const warm = Date.parse('2026-09-08T10:10:00Z')
+
+    it('does not ask again at the same size', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // The user interrupted the request, so nothing was banked. Asking again
+      // at every stop for the rest of the session is worse than not asking.
+      j.recordBankRequest(CWD, Date.now(), 235_852, 's1')
+
+      expect(
+        j.shouldBankHandoff(
+          j.readJournalState(CWD), 240_000, 200_000, path, 's1',
+          { now: warm, reBankGrowth: 100_000 }
+        )
+      ).toBe(false)
+    })
+
+    it('asks once more when the session has grown a long way since', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      j.recordBankRequest(CWD, Date.now(), 235_852, 's1')
+
+      expect(
+        j.shouldBankHandoff(
+          j.readJournalState(CWD), 336_000, 200_000, path, 's1',
+          { now: warm, reBankGrowth: 100_000 }
+        )
+      ).toBe(true)
+    })
+  })
+
+  describe('a request left unanswered by another session', () => {
+    it('does not silence this session\'s bank', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // The state file is per directory, so the previous session's abandoned
+      // request sits in the same file this session reads.
+      j.recordBankRequest(CWD, Date.now(), 235_852, 'previous-session')
+
+      expect(
+        j.shouldBankHandoff(
+          j.readJournalState(CWD), 240_000, 200_000, path, 'this-session',
+          { now: Date.parse('2026-09-08T10:10:00Z'), reBankGrowth: 100_000 }
+        )
+      ).toBe(true)
+    })
+  })
+
   describe('shouldBankHandoff, across sessions', () => {
     const warm = Date.parse('2026-09-08T10:10:00Z')
 
