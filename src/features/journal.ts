@@ -370,17 +370,6 @@ const JUDGEMENT_SECTIONS = [
 ]
 
 /**
- * Break-even turns for rotating, from the cost-weighted waste factor.
- *
- * T = 20 / (w - 1), where 20 is the write-to-read price ratio (2x against
- * 0.1x). Below w = 1 there is nothing to recover and rotation never pays.
- */
-export function breakEvenTurns(wasteFactor: number): number | null {
-  if (wasteFactor <= 1) return null
-  return 20 / (wasteFactor - 1)
-}
-
-/**
  * The largest context any single turn in the session was charged for.
  *
  * Peak rather than final, because a session that compacts drops back down

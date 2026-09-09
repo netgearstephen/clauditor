@@ -71,26 +71,6 @@ describe('journal', () => {
     rmSync(tempDir, { recursive: true, force: true })
   })
 
-  describe('breakEvenTurns', () => {
-    it('returns null when there is nothing to recover', async () => {
-      const { breakEvenTurns } = await importFresh(tempDir)
-      expect(breakEvenTurns(1)).toBeNull()
-      expect(breakEvenTurns(0.8)).toBeNull()
-    })
-
-    it('follows T = 20 / (w - 1)', async () => {
-      const { breakEvenTurns } = await importFresh(tempDir)
-      expect(breakEvenTurns(2)).toBe(20)
-      expect(breakEvenTurns(3)).toBe(10)
-      expect(breakEvenTurns(1.5)).toBe(40)
-    })
-
-    it('pays back sooner the more wasteful the session is', async () => {
-      const { breakEvenTurns } = await importFresh(tempDir)
-      expect(breakEvenTurns(5)!).toBeLessThan(breakEvenTurns(2)!)
-    })
-  })
-
   describe('msSinceLastTurn', () => {
     it('measures from the last timestamped record, not the first', async () => {
       const { msSinceLastTurn } = await importFresh(tempDir)
