@@ -79,6 +79,9 @@ export interface JournalState {
   bankedAt: number
   /** Turn count at which it was banked. */
   bankedAtTurn: number
+  /** Session that banked it. State is per project, so banking once per
+   * session means comparing this, not just testing bankedAt. */
+  bankedSession: string
   /** Epoch ms the banked handoff was promoted into the user's directory. */
   promotedAt: number
 }
@@ -88,6 +91,7 @@ const EMPTY_STATE: JournalState = {
   lastFingerprint: '',
   bankedAt: 0,
   bankedAtTurn: 0,
+  bankedSession: '',
   promotedAt: 0,
 }
 
@@ -395,16 +399,19 @@ export function peakContextTokens(turns: TurnMetrics[]): number {
  * against 17.6% observed, and is where that margin is widest.
  *
  * Warm because cold there is no saving left, and once per session because it
- * spends a turn the user did not ask for.
+ * spends a turn the user did not ask for. Once per SESSION, not per project:
+ * the state file is keyed by directory, so testing bankedAt alone retires the
+ * feature permanently after its first use in a repo.
  */
 export function shouldBankHandoff(
   state: JournalState,
   peakContext: number,
   minPeakContext: number,
   transcriptPath: string | null,
+  sessionId: string | null,
   now: number = Date.now()
 ): boolean {
-  if (state.bankedAt > 0) return false
+  if (state.bankedAt > 0 && state.bankedSession === sessionId) return false
   if (peakContext < minPeakContext) return false
   return isCacheWarm(transcriptPath, now)
 }
@@ -454,13 +461,20 @@ export function bankInstruction(peakContext: number): string {
  *
  * The marker line is stripped: it is plumbing between the hook and the model,
  * and has no business in a document a person reads.
+ *
+ * The trailing arguments are an options bag because sessionId and source are
+ * both strings: passed positionally, one silently type-checks in the other's
+ * slot.
  */
 export function capturePendingHandoff(
   cwd: string | null,
   turns: number,
   message: string,
-  source: JudgementSource = 'banked',
-  now: number = Date.now()
+  {
+    sessionId = null,
+    source = 'banked',
+    now = Date.now(),
+  }: { sessionId?: string | null; source?: JudgementSource; now?: number } = {}
 ): boolean {
   const body = message
     .split('\n')
@@ -480,7 +494,15 @@ export function capturePendingHandoff(
   }
 
   const state = readJournalState(cwd)
-  writeJournalState(cwd, { ...state, bankedAt: now, bankedAtTurn: turns })
+  writeJournalState(cwd, {
+    ...state,
+    bankedAt: now,
+    bankedAtTurn: turns,
+    bankedSession: sessionId ?? '',
+    // A new session's bank supersedes the last one, so the previous
+    // promotion must not keep promoteIfUsed from offering this one.
+    promotedAt: 0,
+  })
   return true
 }
 

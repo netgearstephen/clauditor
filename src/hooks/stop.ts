@@ -266,7 +266,8 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
       state,
       peakContext,
       config.rotation.minPeakContext,
-      input.transcript_path
+      input.transcript_path,
+      input.session_id
     )
   ) {
     return null
@@ -298,7 +299,9 @@ function captureBankedHandoff(input: StopHookInput): void {
   const cwd = extractCwd(input.transcript_path)
   const { turns } = readTurns(input.transcript_path)
 
-  if (capturePendingHandoff(cwd, turns.length, msg)) {
+  if (capturePendingHandoff(cwd, turns.length, msg, {
+      sessionId: input.session_id,
+    })) {
     logActivity({
       type: 'context_warning',
       session: input.session_id.slice(0, 8),

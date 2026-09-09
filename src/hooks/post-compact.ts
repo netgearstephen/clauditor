@@ -55,8 +55,13 @@ export async function handlePostCompactHook(): Promise<void> {
     // did not charge us a turn for it. Banking it means the Stop hook never
     // needs to spend one. It only fills an empty slot, so a handoff written
     // deliberately is never overwritten by a by-product of compaction.
-    const banked = readJournalState(cwd).bankedAt > 0
-    if (!banked && capturePendingHandoff(cwd, turns, summary, 'compaction')) {
+    const state = readJournalState(cwd)
+    const banked =
+      state.bankedAt > 0 && state.bankedSession === (hookInput.session_id || '')
+    if (!banked && capturePendingHandoff(cwd, turns, summary, {
+      sessionId: hookInput.session_id || null,
+      source: 'compaction',
+    })) {
       logActivity({
         type: 'context_warning',
         session: hookInput.session_id?.slice(0, 8) || 'unknown',

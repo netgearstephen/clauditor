@@ -132,6 +132,27 @@ describe('Stop hook banking, end to end', () => {
     expect(JSON.parse(runHook(input))).toEqual({})
   })
 
+  it('banks again in a later session in the same project', () => {
+    // The bank state file is keyed by project directory, so testing bankedAt
+    // alone retired the feature permanently after its first use in a repo.
+    const first = {
+      session_id: 'e2e-first',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(first)
+    runHook({
+      ...first,
+      stop_hook_active: true,
+      last_assistant_message: `## Mission\nDone.\n${'x'.repeat(200)}\n[clauditor-banked-handoff]`,
+    })
+    expect(JSON.parse(runHook(first))).toEqual({})
+
+    const out = runHook({ ...first, session_id: 'e2e-second' })
+    expect(JSON.parse(out).decision).toBe('block')
+  }, 30_000)
+
   it('never blocks on a re-entrant invocation', () => {
     // Blocking here is what produces an interruption loop.
     const out = runHook({

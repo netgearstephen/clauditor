@@ -108,19 +108,19 @@ describe('journal', () => {
   describe('shouldWriteJournal', () => {
     it('writes when there is no journal yet', async () => {
       const { shouldWriteJournal } = await importFresh(tempDir)
-      const state = { lastWriteAt: 0, lastFingerprint: '', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      const state = { lastWriteAt: 0, lastFingerprint: '', bankedAt: 0, bankedAtTurn: 0, bankedSession: '', promotedAt: 0 }
       expect(shouldWriteJournal(state, 'anything', 1000)).toBe(true)
     })
 
     it('writes when the session moved', async () => {
       const { shouldWriteJournal } = await importFresh(tempDir)
-      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, bankedSession: '', promotedAt: 0 }
       expect(shouldWriteJournal(state, 'b', 2000)).toBe(true)
     })
 
     it('skips when nothing changed and the journal is fresh', async () => {
       const { shouldWriteJournal } = await importFresh(tempDir)
-      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, bankedSession: '', promotedAt: 0 }
       expect(shouldWriteJournal(state, 'a', 1000 + 60_000)).toBe(false)
     })
 
@@ -128,7 +128,7 @@ describe('journal', () => {
       const { shouldWriteJournal } = await importFresh(tempDir)
       // Standing in for "before the cache expires", which cannot be predicted:
       // a cache dies during idleness, when no hook fires.
-      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+      const state = { lastWriteAt: 1000, lastFingerprint: 'a', bankedAt: 0, bankedAtTurn: 0, bankedSession: '', promotedAt: 0 }
       expect(shouldWriteJournal(state, 'a', 1000 + 16 * 60_000)).toBe(true)
     })
   })
@@ -167,13 +167,13 @@ describe('journal', () => {
   })
 
   describe('shouldBankHandoff', () => {
-    const fresh = { lastWriteAt: 0, lastFingerprint: '', bankedAt: 0, bankedAtTurn: 0, promotedAt: 0 }
+    const fresh = { lastWriteAt: 0, lastFingerprint: '', bankedAt: 0, bankedAtTurn: 0, bankedSession: '', promotedAt: 0 }
     const warm = Date.parse('2026-09-08T10:10:00Z')
 
     it('banks once peak context reaches the threshold and the cache is warm', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      expect(shouldBankHandoff(fresh, 200_000, 200_000, path, warm)).toBe(true)
+      expect(shouldBankHandoff(fresh, 200_000, 200_000, path, 's1', warm)).toBe(true)
     })
 
     it('does not bank below the threshold', async () => {
@@ -182,7 +182,7 @@ describe('journal', () => {
       // the document outruns the 1.9x saved on the context it avoids
       // rewriting, so banking every such session loses tokens overall.
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      expect(shouldBankHandoff(fresh, 199_999, 200_000, path, warm)).toBe(false)
+      expect(shouldBankHandoff(fresh, 199_999, 200_000, path, 's1', warm)).toBe(false)
     })
 
     it('banks a short session that is already huge', async () => {
@@ -190,14 +190,14 @@ describe('journal', () => {
       // Turn count is not the gate. What a cold rewrite would cost depends on
       // context size alone, and a few enormous file reads get there fast.
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, warm)).toBe(true)
+      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', warm)).toBe(true)
     })
 
     it('never banks twice in a session', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 70 }
-      expect(shouldBankHandoff(banked, 400_000, 200_000, path, warm)).toBe(false)
+      const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 70, bankedSession: 's1' }
+      expect(shouldBankHandoff(banked, 400_000, 200_000, path, 's1', warm)).toBe(false)
     })
 
     it('does not bank once the cache is cold', async () => {
@@ -206,7 +206,37 @@ describe('journal', () => {
       // the context instead of 0.1x, and there is nothing left to save.
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
       const cold = Date.parse('2026-09-08T11:30:00Z')
-      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, cold)).toBe(false)
+      expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', cold)).toBe(false)
+    })
+  })
+
+  describe('shouldBankHandoff, across sessions', () => {
+    const warm = Date.parse('2026-09-08T10:10:00Z')
+
+    it('banks again in a later session in the same project', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // Bank state lives per project directory, so keying "already banked" on
+      // the directory alone retires the feature after one use for good.
+      const banked = {
+        lastWriteAt: 0, lastFingerprint: '', bankedAt: 123,
+        bankedAtTurn: 70, bankedSession: 'session-one', promotedAt: 0,
+      }
+      expect(
+        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-two', warm)
+      ).toBe(true)
+    })
+
+    it('still refuses a second bank inside the same session', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const banked = {
+        lastWriteAt: 0, lastFingerprint: '', bankedAt: 123,
+        bankedAtTurn: 70, bankedSession: 'session-one', promotedAt: 0,
+      }
+      expect(
+        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-one', warm)
+      ).toBe(false)
     })
   })
 
@@ -338,7 +368,7 @@ describe('journal', () => {
 
     it('records which source the judgement came from', async () => {
       const j = await importFresh(tempDir)
-      j.capturePendingHandoff(CWD, 80, judgement(j, 'from compaction'), 'compaction')
+      j.capturePendingHandoff(CWD, 80, judgement(j, 'from compaction'), { source: 'compaction' })
       expect(readFileSync(j.pendingHandoffPath(CWD), 'utf-8')).toContain(
         'judgement source: compaction'
       )
@@ -355,12 +385,17 @@ describe('journal', () => {
     it('stops the Stop hook paying for a turn once compaction has banked one', async () => {
       const j = await importFresh(tempDir)
       // Compaction judgement is free, so it pre-empts the paid bank entirely.
-      j.capturePendingHandoff(CWD, 80, judgement(j, 'from compaction'), 'compaction')
+      j.capturePendingHandoff(CWD, 80, judgement(j, 'from compaction'), {
+        sessionId: 's1',
+        source: 'compaction',
+      })
 
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
       const now = Date.parse('2026-09-08T10:10:00Z')
       expect(
-        j.shouldBankHandoff(j.readJournalState(CWD), 200, 9.0, 61, 1.5, path, now)
+        j.shouldBankHandoff(
+          j.readJournalState(CWD), 400_000, 200_000, path, 's1', now
+        )
       ).toBe(false)
     })
   })
