@@ -1620,49 +1620,56 @@ hookCmd
   .command('stop')
   .description('Stop hook handler')
   .action(async () => {
-    await import('./hooks/stop.js')
+    const { handleStopHook } = await import('./hooks/stop.js')
+    await handleStopHook()
   })
 
 hookCmd
   .command('post-tool-use')
   .description('PostToolUse hook handler')
   .action(async () => {
-    await import('./hooks/post-tool-use.js')
+    const { handlePostToolUseHook } = await import('./hooks/post-tool-use.js')
+    await handlePostToolUseHook()
   })
 
 hookCmd
   .command('pre-tool-use')
   .description('PreToolUse hook handler')
   .action(async () => {
-    await import('./hooks/pre-tool-use.js')
+    const { handlePreToolUseHook } = await import('./hooks/pre-tool-use.js')
+    await handlePreToolUseHook()
   })
 
 hookCmd
   .command('user-prompt-submit')
   .description('UserPromptSubmit hook handler — blocks oversized sessions')
   .action(async () => {
-    await import('./hooks/user-prompt-submit.js')
+    const { handleUserPromptSubmitHook } = await import('./hooks/user-prompt-submit.js')
+    await handleUserPromptSubmitHook()
   })
 
 hookCmd
   .command('pre-compact')
   .description('PreCompact hook handler — saves context before compaction')
   .action(async () => {
-    await import('./hooks/pre-compact.js')
+    const { handlePreCompactHook } = await import('./hooks/pre-compact.js')
+    await handlePreCompactHook()
   })
 
 hookCmd
   .command('post-compact')
   .description('PostCompact hook handler — captures Claude\'s own session summary')
   .action(async () => {
-    await import('./hooks/post-compact.js')
+    const { handlePostCompactHook } = await import('./hooks/post-compact.js')
+    await handlePostCompactHook()
   })
 
 hookCmd
   .command('session-start')
   .description('SessionStart hook handler')
   .action(async () => {
-    await import('./hooks/session-start.js')
+    const { handleSessionStartHook } = await import('./hooks/session-start.js')
+    await handleSessionStartHook()
   })
 
 // ─── Config loader ───────────────────────────────────────────────

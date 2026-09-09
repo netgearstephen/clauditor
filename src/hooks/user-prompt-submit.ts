@@ -1,4 +1,4 @@
-import { readStdin } from './shared.js'
+import { readStdin, isHookEntry } from './shared.js'
 
 /**
  * UserPromptSubmit hook — fires before Claude processes the user's prompt.
@@ -28,8 +28,10 @@ export async function handleUserPromptSubmitHook(): Promise<void> {
   process.stdout.write('{}')
 }
 
-// Run if invoked directly
-handleUserPromptSubmitHook().catch(() => {
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('user-prompt-submit')) {
+  handleUserPromptSubmitHook().catch(() => {
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

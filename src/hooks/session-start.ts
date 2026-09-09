@@ -7,7 +7,7 @@ import { parseJsonlFile, extractTurns, extractModel } from '../daemon/parser.js'
 import { detectCacheDegradation } from '../features/cache-health.js'
 import { hasResumeBoundary, detectResumeAnomaly } from '../features/resume-detector.js'
 import { logActivity } from '../features/activity-log.js'
-import { readStdin, outputDecision, pruneStaleStateFiles } from './shared.js'
+import { readStdin, outputDecision, pruneStaleStateFiles, isHookEntry } from './shared.js'
 
 /**
  * SessionStart hook handler.
@@ -290,13 +290,6 @@ async function checkRecentSessions(projectsDir: string): Promise<string[]> {
   return [...new Set(issues)].slice(0, 3)
 }
 
-// Run if invoked directly
-handleSessionStartHook().catch((err) => {
-  process.stderr.write(`clauditor session-start hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
-
 /** Age of a summary file in whole minutes, or null if it cannot be read. */
 function summaryAge(path: string): number | null {
   try {
@@ -304,4 +297,13 @@ function summaryAge(path: string): number | null {
   } catch {
     return null
   }
+}
+
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('session-start')) {
+  handleSessionStartHook().catch((err) => {
+    process.stderr.write(`clauditor session-start hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
 }

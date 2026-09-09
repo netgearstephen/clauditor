@@ -1,6 +1,6 @@
 import { logActivity } from '../features/activity-log.js'
 import { parseStructuredHandoff } from '../features/session-state.js'
-import { readStdin, outputDecision } from './shared.js'
+import { readStdin, outputDecision, isHookEntry } from './shared.js'
 
 /**
  * PostCompact hook handler.
@@ -160,9 +160,11 @@ async function pushCompactToHub(summary: string, cwd: string | null): Promise<vo
     }
 }
 
-// Run if invoked directly
-handlePostCompactHook().catch((err) => {
-  process.stderr.write(`clauditor post-compact hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('post-compact')) {
+  handlePostCompactHook().catch((err) => {
+    process.stderr.write(`clauditor post-compact hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

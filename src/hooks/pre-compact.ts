@@ -1,6 +1,6 @@
 import { logActivity } from '../features/activity-log.js'
 import { readTurns, writeJournal } from '../features/journal.js'
-import { readStdin, outputDecision, findTranscriptPathSync } from './shared.js'
+import { readStdin, outputDecision, findTranscriptPathSync, isHookEntry } from './shared.js'
 
 /**
  * PreCompact hook — fires right before Claude Code compacts the context.
@@ -45,8 +45,11 @@ export async function handlePreCompactHook(): Promise<void> {
   outputDecision({})
 }
 
-handlePreCompactHook().catch((err) => {
-  process.stderr.write(`clauditor pre-compact hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('pre-compact')) {
+  handlePreCompactHook().catch((err) => {
+    process.stderr.write(`clauditor pre-compact hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

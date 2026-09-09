@@ -13,7 +13,7 @@ import { detectResumeAnomaly } from '../features/resume-detector.js'
 import { estimateQuotaBurnRate } from '../features/quota-burn.js'
 import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
-import { readStdin, outputDecision, writeJsonFileAtomic, readJsonFile } from './shared.js'
+import { readStdin, outputDecision, writeJsonFileAtomic, readJsonFile, isHookEntry } from './shared.js'
 import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from '../features/cost-tracker.js'
 
 /**
@@ -753,9 +753,11 @@ function formatSize(chars: number): string {
   return `${(chars / 1000).toFixed(1)}k chars`
 }
 
-// Run if invoked directly
-handlePostToolUseHook().catch((err) => {
-  process.stderr.write(`clauditor post-tool-use hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('post-tool-use')) {
+  handlePostToolUseHook().catch((err) => {
+    process.stderr.write(`clauditor post-tool-use hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

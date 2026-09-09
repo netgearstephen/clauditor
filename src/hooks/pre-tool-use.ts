@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import type { PreToolUseHookInput, HookDecision } from '../types.js'
-import { readStdin, outputDecision } from './shared.js'
+import { readStdin, outputDecision, isHookEntry } from './shared.js'
 import { findKnownError } from '../features/error-index.js'
 
 // Rate limit: only inject once per unique base command per session.
@@ -165,9 +165,11 @@ async function processPreToolUse(input: PreToolUseHookInput): Promise<HookDecisi
   return { additionalContext: parts.join('\n\n') }
 }
 
-// Run if invoked directly
-handlePreToolUseHook().catch((err) => {
-  process.stderr.write(`clauditor pre-tool-use hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('pre-tool-use')) {
+  handlePreToolUseHook().catch((err) => {
+    process.stderr.write(`clauditor pre-tool-use hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

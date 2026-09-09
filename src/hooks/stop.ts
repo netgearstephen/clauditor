@@ -21,7 +21,7 @@ import {
   peakContextTokens,
   writeJournal,
 } from '../features/journal.js'
-import { readStdin, outputDecision } from './shared.js'
+import { readStdin, outputDecision, isHookEntry } from './shared.js'
 
 /**
  * Stop hook handler.
@@ -332,10 +332,12 @@ function captureBankedHandoff(input: StopHookInput): void {
   }
 }
 
-// Run if invoked directly
-handleStopHook().catch((err) => {
-  process.stderr.write(`clauditor stop hook error: ${err}\n`)
-  // Output empty decision on error to avoid breaking Claude Code
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('stop')) {
+  handleStopHook().catch((err) => {
+    process.stderr.write(`clauditor stop hook error: ${err}\n`)
+    // Output empty decision on error to avoid breaking Claude Code
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}
