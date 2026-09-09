@@ -42,6 +42,26 @@ function writeUserHandoff(
   return path
 }
 
+/**
+ * A stand-in facts script that reports only the session id it was handed.
+ *
+ * The real one is owned by the /handoff skill and reads a transcript; what
+ * matters here is which id assembly passes it.
+ */
+function fakeFactsScript(home: string): void {
+  const dir = join(home, '.claude', 'skills', 'handoff', 'scripts')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'handoff-facts.py'),
+    [
+      'import sys',
+      'sid = sys.argv[sys.argv.index("--session-id") + 1] if "--session-id" in sys.argv else "none"',
+      'print("**Session**: " + sid)',
+      '',
+    ].join('\n')
+  )
+}
+
 /** Turns whose context sizes are exactly as given. */
 function turnsWith(...contexts: number[]) {
   return contexts.map((c, i) => ({
@@ -352,6 +372,34 @@ describe('journal', () => {
 
       const assembled = j.assembleHandoff(null, CWD)
       expect(assembled).toContain('## Mission')
+    })
+
+    it('regenerates the facts under the session that banked, not the one assembling', async () => {
+      const j = await importFresh(tempDir)
+      // The facts script runs in the repo, so the repo has to exist.
+      const repo = join(tempDir, 'repo')
+      mkdirSync(repo, { recursive: true })
+      fakeFactsScript(tempDir)
+      j.capturePendingHandoff(repo, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`, {
+        sessionId: 'banked-session',
+      })
+
+      // A later session promotes it, and must not put its own name on the work.
+      const assembled = j.assembleHandoff('promoting-session', repo)!
+      expect(assembled).toContain('**Session**: banked-session')
+      expect(assembled).not.toContain('promoting-session')
+    })
+
+    it('falls back to the assembling session for state banked before the id was recorded', async () => {
+      const j = await importFresh(tempDir)
+      const repo = join(tempDir, 'repo')
+      mkdirSync(repo, { recursive: true })
+      fakeFactsScript(tempDir)
+      j.capturePendingHandoff(repo, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`)
+
+      expect(j.assembleHandoff('only-id-available', repo)).toContain(
+        '**Session**: only-id-available'
+      )
     })
 
     it('returns nothing when no judgement has been banked', async () => {

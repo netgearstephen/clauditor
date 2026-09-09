@@ -503,6 +503,7 @@ export function capturePendingHandoff(
     // promotion must not keep promoteIfUsed from offering this one.
     promotedAt: 0,
   })
+
   return true
 }
 
@@ -526,7 +527,14 @@ export function assembleHandoff(
   } catch {}
   if (!judgement) return null
 
-  let facts = runFactsScript(sessionId, cwd)
+  // The facts belong to the session that banked the judgement, not to whoever
+  // is assembling it. Assembly runs in a later session whose own transcript
+  // holds none of the work this document describes: regenerated under that id,
+  // the header would name the wrong session and the file lists would come back
+  // empty. The passed id is the fallback for state banked before it was
+  // recorded.
+  const state = readJournalState(cwd)
+  let facts = runFactsScript(state.bankedSession || sessionId, cwd)
   if (!facts) {
     try {
       facts = readFileSync(journalPath(cwd), 'utf-8').trim()
