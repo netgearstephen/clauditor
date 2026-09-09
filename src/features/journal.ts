@@ -883,7 +883,11 @@ export function assembleHandoff(
   } catch {}
   if (!judgement) return null
 
-  return mergeWithFacts(judgement, sessionId, cwd)
+  // At read time the banking session is the authority: assembly runs in a
+  // later session whose own transcript holds none of this work. The passed id
+  // is the fallback for state banked before the field existed.
+  const state = readJournalState(cwd)
+  return mergeWithFacts(judgement, state.bankedSession || sessionId, cwd)
 }
 
 /**
@@ -899,14 +903,12 @@ export function mergeWithFacts(
   sessionId: string | null,
   cwd: string | null
 ): string {
-  // The facts belong to the session that banked the judgement, not to whoever
-  // is assembling it. Assembly can run in a later session whose own transcript
-  // holds none of the work this document describes: regenerated under that id,
-  // the header would name the wrong session and the file lists would come back
-  // empty. The passed id is the fallback for state banked before it was
-  // recorded.
-  const state = readJournalState(cwd)
-  let facts = runFactsScript(state.bankedSession || sessionId, cwd)
+  // The id is used exactly as given, and resolving which id that should be is
+  // the caller's job. This function used to prefer state.bankedSession, which
+  // is right at read time and wrong at bank time: the state still describes
+  // the PREVIOUS session's bank, so a freshly banked document was given the
+  // last session's files, reads and commits under a correct judgement half.
+  let facts = runFactsScript(sessionId, cwd)
   if (!facts) {
     try {
       facts = readFileSync(journalPath(cwd), 'utf-8').trim()

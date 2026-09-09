@@ -130,7 +130,8 @@ describe('Stop hook banking, end to end', () => {
     })
 
     expect(JSON.parse(runHook(input))).toEqual({})
-  })
+    // Three hook invocations at roughly 1.7s each outrun the 5s default.
+  }, 30_000)
 
   it('banks again in a later session in the same project', () => {
     // The bank state file is keyed by project directory, so testing bankedAt

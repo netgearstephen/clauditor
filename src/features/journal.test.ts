@@ -437,6 +437,29 @@ describe('journal', () => {
       expect(readFileSync(written, 'utf-8')).toContain('**Session**: banked-session')
     })
 
+    it('names the banking session, not the one the state still remembers', async () => {
+      const j = await importFresh(tempDir)
+      const repo = join(tempDir, 'repo')
+      mkdirSync(repo, { recursive: true })
+      fakeFactsScript(tempDir)
+
+      // A previous session banked in this repo, so the state names it.
+      j.recordBankRequest(repo)
+      modelWrites(join(handoffs(tempDir), 'earlier-20260909-1200.md'))
+      j.adoptBankedHandoff(repo, 40, { sessionId: 'previous-session' })
+      expect(j.readJournalState(repo).bankedSession).toBe('previous-session')
+
+      // Now this session banks. Preferring the stored id here gave the new
+      // document the previous session's files, reads and commits.
+      j.recordBankRequest(repo)
+      const mine = modelWrites(join(handoffs(tempDir), 'mine-20260909-1600.md'))
+      const adopted = j.adoptBankedHandoff(repo, 80, { sessionId: 'this-session' })
+
+      const stored = readFileSync(adopted ?? mine, 'utf-8')
+      expect(stored).toContain('**Session**: this-session')
+      expect(stored).not.toContain('previous-session')
+    })
+
     it('finds the file even when the reply names no path', async () => {
       const j = await importFresh(tempDir)
       j.recordBankRequest(CWD)
