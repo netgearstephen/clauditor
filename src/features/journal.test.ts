@@ -383,6 +383,60 @@ describe('journal', () => {
     })
   })
 
+  describe('the title line', () => {
+    const withTitle = (j: { BANK_MARKER: string }, title: string) =>
+      `# Handoff: ${title}\n\n## Mission\nSome prose that runs on.\n${'x'.repeat(200)}\n${j.BANK_MARKER}`
+
+    it('names the promoted file', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, withTitle(j, 'Wire clauditor into the handoff skill'))
+      expect(j.promoteIfUsed(null, CWD)).toContain('wire-clauditor-into-the-handoff-skill')
+    })
+
+    it('is preferred over the first line of Mission', async () => {
+      const j = await importFresh(tempDir)
+      // The fallback would produce "some-prose-that-runs-on", which is the
+      // failure the title line exists to prevent.
+      j.capturePendingHandoff(CWD, 80, withTitle(j, 'Two mode summary'))
+      const target = j.promoteIfUsed(null, CWD)
+      expect(target).toContain('two-mode-summary')
+      expect(target).not.toContain('some-prose')
+    })
+
+    it('sits above the header block in the assembled document', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, withTitle(j, 'Two mode summary'))
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.journalPath(CWD), '**Repo**: /home/user/project-a')
+
+      const out = j.assembleHandoff(null, CWD)!
+      expect(out.indexOf('# Handoff: Two mode summary')).toBeLessThan(out.indexOf('**Repo**'))
+      // Exactly one copy, not one above the facts and one still inside the body.
+      expect(out.match(/# Handoff:/g)).toHaveLength(1)
+    })
+
+    it('keeps the provenance comment at the top, not mid-document', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, withTitle(j, 'Two mode summary'))
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.journalPath(CWD), '**Repo**: /home/user/project-a')
+
+      const out = j.assembleHandoff(null, CWD)!
+      // Left where it was stored it lands between the header block and the
+      // first section, reading as though a section had gone missing.
+      expect(out.indexOf('judgement source')).toBeLessThan(out.indexOf('**Repo**'))
+      expect(out).not.toMatch(/\n\n\n/)
+      expect(out.match(/judgement source/g)).toHaveLength(1)
+    })
+
+    it('still produces a document when no title was written', async () => {
+      const j = await importFresh(tempDir)
+      j.capturePendingHandoff(CWD, 80, `## Mission\nNo title here.\n${'x'.repeat(200)}`)
+      expect(j.assembleHandoff(null, CWD)).toContain('## Mission')
+      expect(j.promoteIfUsed(null, CWD)).toContain('no-title-here')
+    })
+  })
+
   describe('bankInstruction', () => {
     it('asks only for the sections the facts script cannot produce', async () => {
       const { bankInstruction } = await importFresh(tempDir)

@@ -427,7 +427,13 @@ export function bankInstruction(wasteFactor: number): string {
     `costs roughly 20x more once the cache expires.\n\n` +
     `Banking one now, so it is ready if and when you rotate. Nothing is being blocked and ` +
     `the session continues normally after this.\n\n` +
-    `Write ONLY the judgement half of a handoff, using these sections and no others:\n\n` +
+    `Start with a title line, exactly this shape and nothing above it:\n\n` +
+    `# Handoff: <the task, as a short name>\n\n` +
+    `That title names the file, so make it a name and not a sentence: under 60 ` +
+    `characters, no trailing full stop, and specific enough to pick out of a list of ` +
+    `many. "Wire clauditor into the handoff skill" is a name. "Two pieces of work, ` +
+    `both complete" is not.\n\n` +
+    `Then write ONLY the judgement half of a handoff, using these sections and no others:\n\n` +
     JUDGEMENT_SECTIONS.map((s) => `## ${s}`).join('\n') +
     `\n\nOmit any section with no real content rather than stubbing it. Do NOT write a ` +
     `header block, Files touched, Required reading, or Verification command: those are ` +
@@ -508,9 +514,27 @@ export function assembleHandoff(
   }
   if (!facts) return judgement
 
-  // Facts first: the header block belongs at the top of a handoff, and the
-  // judgement sections read as commentary on the state it establishes.
-  return `${facts}\n\n${judgement}\n`
+  // Provenance, title, facts, then the rest of the judgement. This is the
+  // order a hand-written handoff uses, so both modes produce the same document
+  // shape and neither is recognisable as the machine-written one.
+  //
+  // The provenance comment and the title are both lifted out of the stored
+  // judgement rather than left where they sit. Left alone they land between
+  // the header block and the first section, which reads as though a section is
+  // missing.
+  const title = titleLine(judgement)
+  const provenance = judgement.match(/^<!--\s*judgement source:.*?-->\s*$/m)?.[0] ?? null
+
+  const body = judgement
+    .replace(/^<!--\s*judgement source:.*?-->\s*$/m, '')
+    .replace(/^#\s+Handoff:.*$/m, '')
+    .trimStart()
+
+  const head = [provenance, title ? `# Handoff: ${title}` : null]
+    .filter(Boolean)
+    .join('\n')
+
+  return head ? `${head}\n\n${facts}\n\n${body}\n` : `${facts}\n\n${body}\n`
 }
 
 /**
@@ -569,14 +593,26 @@ export function promoteHandoff(
   return target
 }
 
-/** First line of the Mission section, as a filename slug. */
+/** The `# Handoff:` title line, if the judgement carries one. */
+function titleLine(handoff: string): string | null {
+  return handoff.match(/^#\s+Handoff:\s*(.+?)\s*$/m)?.[1] || null
+}
+
+/**
+ * A name for the file.
+ *
+ * Prefers the title line, which is asked for precisely so that this does not
+ * have to guess. Falls back to the first line of Mission, which produces a
+ * poor name when that line is a sentence rather than a title, and is why the
+ * title line exists.
+ */
 function missionSlug(handoff: string): string {
   const mission = handoff
     .split(/^## Mission\s*$/m)[1]
     ?.split(/^##\s/m)[0]
     ?.trim()
     .split('\n')[0]
-  return mission || 'session'
+  return titleLine(handoff) || mission || 'session'
 }
 
 /**
