@@ -84,6 +84,10 @@ export interface JournalState {
   bankedSession: string
   /** Epoch ms the banked handoff was promoted into the user's directory. */
   promotedAt: number
+  /** Epoch ms the bank was asked for, 0 if never. A handoff file newer than
+   * this was written by the model answering that request, rather than left
+   * over from an earlier one. */
+  bankRequestedAt: number
 }
 
 const EMPTY_STATE: JournalState = {
@@ -93,6 +97,7 @@ const EMPTY_STATE: JournalState = {
   bankedAtTurn: 0,
   bankedSession: '',
   promotedAt: 0,
+  bankRequestedAt: 0,
 }
 
 /** Encode a cwd into a directory name. Mirrors session-state's encoding. */
@@ -481,7 +486,7 @@ export function shouldBankHandoff(
  * handoff" will reconstruct a file list from the transcript, and that
  * reconstruction is both slower and where paths and SHAs go subtly wrong.
  */
-export function bankInstruction(peakContext: number): string {
+export function bankInstruction(peakContext: number, handoffPath: string): string {
   const k = peakContext.toLocaleString('en-GB')
   return (
     `clauditor: this session peaked at ${k} context tokens. The prompt cache is still ` +
@@ -490,7 +495,14 @@ export function bankInstruction(peakContext: number): string {
     `it, so the same document costs roughly twenty times more once the cache expires.\n\n` +
     `Banking one now, so it is ready if and when you rotate. Nothing is being blocked and ` +
     `the session continues normally after this.\n\n` +
-    `Start with a title line, exactly this shape and nothing above it:\n\n` +
+    `Write the handoff to this exact path with the Write tool:\n\n` +
+    `${handoffPath}\n\n` +
+    `Then reply with one short line saying it is banked, and nothing else. The handoff is ` +
+    `a document for a later session to read from disk, not something the user needs to see ` +
+    `scroll past now, so do not repeat any of its content in your reply. If the Write tool ` +
+    `is not available to you on this turn, and only then, put the handoff in your reply ` +
+    `instead.\n\n` +
+    `Start the file with a title line, exactly this shape and nothing above it:\n\n` +
     `# Handoff: <the task, as a short name>\n\n` +
     `That title names the file, so make it a name and not a sentence: under 60 ` +
     `characters, no trailing full stop, and specific enough to pick out of a list of ` +
@@ -508,21 +520,84 @@ export function bankInstruction(peakContext: number): string {
     `Keep it under 12,000 bytes. Cut anything a Read of a cited path would tell the reader; ` +
     `cite the path instead. Never cut open questions, dead ends with their reason, gotchas, ` +
     `do-not-touch, or low confidence: those are what cannot be reconstructed.\n\n` +
-    `End your reply with the marker ${BANK_MARKER} on its own line, then stop.`
+    `End your reply with the marker ${BANK_MARKER} on its own line, then stop. The marker ` +
+    `goes in the reply either way: it is how clauditor knows the request was answered. Do ` +
+    `not put it in the file.`
   )
 }
 
 /**
- * Store Claude's banked judgement half.
+ * Record that a bank has been asked for.
+ *
+ * Written before the request goes out, so that a handoff file appearing at the
+ * pending path afterwards can be told apart from one left there by an earlier
+ * bank. The directory is created at the same time: the model is about to be
+ * asked to write into it.
+ */
+export function recordBankRequest(
+  cwd: string | null,
+  now: number = Date.now()
+): void {
+  try {
+    mkdirSync(journalDir(cwd), { recursive: true })
+  } catch {}
+  const state = readJournalState(cwd)
+  writeJournalState(cwd, { ...state, bankRequestedAt: now })
+}
+
+/**
+ * Adopt a handoff the model wrote to the pending path itself.
+ *
+ * The preferred path, because the alternative is the model reciting the whole
+ * document into the reply, where the user has to scroll past a file they did
+ * not ask to read. All this has to do is add the provenance line and record
+ * the bank; the content is already on disk.
+ *
+ * Returns false if there is no file newer than the request, which covers both
+ * a model that answered in the reply instead and a stale file from an earlier
+ * bank. The caller then falls back to capturing from the message.
+ */
+export function adoptWrittenHandoff(
+  cwd: string | null,
+  turns: number,
+  {
+    sessionId = null,
+    now = Date.now(),
+  }: { sessionId?: string | null; now?: number } = {}
+): boolean {
+  const state = readJournalState(cwd)
+  if (state.bankRequestedAt === 0) return false
+
+  const path = pendingHandoffPath(cwd)
+  let written: string
+  try {
+    // A second of slack: the file is stamped by the filesystem, the request by
+    // this process, and the two clocks need not agree to the millisecond.
+    if (statSync(path).mtimeMs < state.bankRequestedAt - 1000) return false
+    written = readFileSync(path, 'utf-8')
+  } catch {
+    return false
+  }
+
+  return storeJudgement(cwd, turns, written, {
+    sessionId,
+    source: 'banked',
+    now,
+  })
+}
+
+/**
+ * Store Claude's banked judgement half, given the text of it.
  *
  * The marker line is stripped: it is plumbing between the hook and the model,
- * and has no business in a document a person reads.
+ * and has no business in a document a person reads. So is any provenance line
+ * already present, which would otherwise accumulate one copy per adoption.
  *
  * The trailing arguments are an options bag because sessionId and source are
  * both strings: passed positionally, one silently type-checks in the other's
  * slot.
  */
-export function capturePendingHandoff(
+function storeJudgement(
   cwd: string | null,
   turns: number,
   message: string,
@@ -535,6 +610,7 @@ export function capturePendingHandoff(
   const body = message
     .split('\n')
     .filter((l) => !l.includes(BANK_MARKER))
+    .filter((l) => !/^<!--\s*judgement source:.*?-->\s*$/.test(l))
     .join('\n')
     .trim()
   if (body.length < 100) return false
@@ -563,6 +639,21 @@ export function capturePendingHandoff(
   // Only a paid bank is recorded: see BANKED_DIR.
   if (source === 'banked') markSessionBanked(sessionId, cwd, now)
   return true
+}
+
+/**
+ * Store a judgement half that arrived in the assistant's reply.
+ *
+ * The fallback to adoptWrittenHandoff, and the only route for a compaction
+ * summary, which is handed to us as text and was never a file.
+ */
+export function capturePendingHandoff(
+  cwd: string | null,
+  turns: number,
+  message: string,
+  opts: { sessionId?: string | null; source?: JudgementSource; now?: number } = {}
+): boolean {
+  return storeJudgement(cwd, turns, message, opts)
 }
 
 /**

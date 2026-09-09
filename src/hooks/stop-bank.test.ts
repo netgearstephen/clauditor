@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
@@ -151,6 +151,38 @@ describe('Stop hook banking, end to end', () => {
 
     const out = runHook({ ...first, session_id: 'e2e-second' })
     expect(JSON.parse(out).decision).toBe('block')
+  }, 30_000)
+
+  it('asks for a file, and adopts it without the reply carrying the handoff', () => {
+    // The point of the file: what the user sees in the terminal is one line,
+    // not the whole document recited back at them.
+    const request = {
+      session_id: 'e2e-written',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    const reason = JSON.parse(runHook(request)).reason as string
+    expect(reason).toContain(pendingPath())
+
+    // Stand in for the model's Write call on the blocked turn.
+    mkdirSync(dirname(pendingPath()), { recursive: true })
+    writeFileSync(
+      pendingPath(),
+      `# Handoff: Written to disk\n\n## Mission\nShip the thing.\n${'x'.repeat(200)}\n`
+    )
+
+    runHook({
+      ...request,
+      stop_hook_active: true,
+      last_assistant_message: 'Banked the handoff.\n[clauditor-banked-handoff]',
+    })
+
+    const stored = readFileSync(pendingPath(), 'utf-8')
+    expect(stored).toContain('judgement source: banked')
+    expect(stored).toContain('Written to disk')
+    // And the request is answered: no second ask.
+    expect(JSON.parse(runHook(request))).toEqual({})
   }, 30_000)
 
   it('does not bank twice when one session changes directory', () => {

@@ -399,6 +399,90 @@ describe('journal', () => {
     })
   })
 
+  describe('adoptWrittenHandoff', () => {
+    const body = `# Handoff: Written to disk\n\n## Mission\n${'x'.repeat(200)}\n`
+
+    /** Stand in for the model's own Write call. */
+    const modelWrites = (j: { journalDir: (c: string) => string; pendingHandoffPath: (c: string) => string }, text = body) => {
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      writeFileSync(j.pendingHandoffPath(CWD), text)
+    }
+
+    it('adopts a handoff the model wrote itself, so the reply carries none of it', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      modelWrites(j)
+
+      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(true)
+      const stored = readFileSync(j.pendingHandoffPath(CWD), 'utf-8')
+      expect(stored).toContain('judgement source: banked')
+      expect(stored).toContain('## Mission')
+      expect(j.readJournalState(CWD).bankedSession).toBe('s1')
+    })
+
+    it('counts as the session having paid, so it cannot bank again elsewhere', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      modelWrites(j)
+      j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })
+      expect(j.hasSessionBanked('s1')).toBe(true)
+    })
+
+    it('refuses a file left over from an earlier bank', async () => {
+      const j = await importFresh(tempDir)
+      modelWrites(j)
+      const old = Date.now() - 60 * 60 * 1000
+      utimesSync(j.pendingHandoffPath(CWD), old / 1000, old / 1000)
+      j.recordBankRequest(CWD)
+
+      // Adopting this would re-bank a stale document as though it were new.
+      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(false)
+    })
+
+    it('refuses when no bank was ever asked for', async () => {
+      const j = await importFresh(tempDir)
+      modelWrites(j)
+      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(false)
+    })
+
+    it('refuses when the model answered in the reply instead', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      // Nothing written: the caller has to fall back to the message.
+      expect(j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })).toBe(false)
+    })
+
+    it('keeps one provenance line however often a file is adopted', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      modelWrites(j)
+      j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })
+      j.recordBankRequest(CWD)
+      j.adoptWrittenHandoff(CWD, 90, { sessionId: 's1' })
+
+      const stored = readFileSync(j.pendingHandoffPath(CWD), 'utf-8')
+      expect(stored.match(/judgement source:/g)).toHaveLength(1)
+    })
+
+    it('strips the marker if the model put it in the file', async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD)
+      modelWrites(j, `${body}\n${j.BANK_MARKER}\n`)
+      j.adoptWrittenHandoff(CWD, 80, { sessionId: 's1' })
+      expect(readFileSync(j.pendingHandoffPath(CWD), 'utf-8')).not.toContain(j.BANK_MARKER)
+    })
+  })
+
+  describe('bankInstruction', () => {
+    it('names the path to write, and asks for a one-line reply', async () => {
+      const j = await importFresh(tempDir)
+      const instruction = j.bankInstruction(260_000, j.pendingHandoffPath(CWD))
+      expect(instruction).toContain(j.pendingHandoffPath(CWD))
+      expect(instruction).toContain('Write tool')
+      expect(instruction).toContain('do not repeat any of its content in your reply')
+    })
+  })
+
   describe('assembleHandoff', () => {
     it('falls back to the stored journal when the facts script cannot run', async () => {
       const j = await importFresh(tempDir)

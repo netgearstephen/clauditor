@@ -10,9 +10,12 @@ import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
 import {
   BANK_MARKER,
+  adoptWrittenHandoff,
   bankInstruction,
   capturePendingHandoff,
+  pendingHandoffPath,
   readJournalState,
+  recordBankRequest,
   readTurns,
   shouldBankHandoff,
   peakContextTokens,
@@ -281,7 +284,14 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
       `${turns.length} turns, cache warm`,
   }).catch(() => {})
 
-  return { decision: 'block', reason: bankInstruction(peakContext) }
+  // Stamped before the request goes out, so a file at the pending path
+  // afterwards is known to be this request's answer.
+  recordBankRequest(cwd)
+
+  return {
+    decision: 'block',
+    reason: bankInstruction(peakContext, pendingHandoffPath(cwd)),
+  }
 }
 
 /**
@@ -299,13 +309,25 @@ function captureBankedHandoff(input: StopHookInput): void {
   const cwd = extractCwd(input.transcript_path)
   const { turns } = readTurns(input.transcript_path)
 
+  // Preferred: the model wrote the document itself and said so in one line.
+  // Falling back to the reply covers the turn where the Write tool was not
+  // available, at the cost of the whole handoff appearing in the terminal.
+  if (adoptWrittenHandoff(cwd, turns.length, { sessionId: input.session_id })) {
+    logActivity({
+      type: 'context_warning',
+      session: input.session_id.slice(0, 8),
+      message: 'banked handoff judgement (written to file, not inlined)',
+    }).catch(() => {})
+    return
+  }
+
   if (capturePendingHandoff(cwd, turns.length, msg, {
       sessionId: input.session_id,
     })) {
     logActivity({
       type: 'context_warning',
       session: input.session_id.slice(0, 8),
-      message: `banked handoff judgement (${msg.length} chars)`,
+      message: `banked handoff judgement from the reply (${msg.length} chars)`,
     }).catch(() => {})
   }
 }
