@@ -131,6 +131,58 @@ export function writeJournalState(cwd: string | null, state: JournalState): void
   } catch {}
 }
 
+/**
+ * One marker file per session that has paid for a bank.
+ *
+ * Keyed by session id rather than by directory, which is the whole point. The
+ * journal state file lives under the encoded cwd, and a session that changes
+ * directory mid-run reads a different one: it finds bankedAt 0, and banks a
+ * second time for work it has already described. This ledger travels with the
+ * session across every directory it visits.
+ *
+ * Free banks are deliberately absent from it. A compaction summary costs
+ * nothing, so there is no turn to protect, and recording it here would leave a
+ * repo the session moved into with no judgement at all.
+ */
+const BANKED_DIR = resolve(CLAUDITOR_DIR, 'banked')
+
+/** How long a marker is kept. Long enough that no live session outlasts it. */
+const BANK_MARKER_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+/** Marker path for a session, or null if the id cannot be a filename. */
+function bankMarkerPath(sessionId: string | null): string | null {
+  if (!sessionId || !/^[A-Za-z0-9_-]{1,100}$/.test(sessionId)) return null
+  return resolve(BANKED_DIR, `${sessionId}.json`)
+}
+
+/** Has this session already paid for a bank, in any directory? */
+export function hasSessionBanked(sessionId: string | null): boolean {
+  const path = bankMarkerPath(sessionId)
+  return path ? existsSync(path) : false
+}
+
+/** Record that this session has paid for a bank, and prune stale markers. */
+export function markSessionBanked(
+  sessionId: string | null,
+  cwd: string | null,
+  now: number = Date.now()
+): void {
+  const path = bankMarkerPath(sessionId)
+  if (!path) return
+  try {
+    mkdirSync(BANKED_DIR, { recursive: true })
+    writeFileSync(path, JSON.stringify({ bankedAt: now, cwd }, null, 2))
+  } catch {
+    return
+  }
+  try {
+    for (const name of readdirSync(BANKED_DIR)) {
+      const marker = resolve(BANKED_DIR, name)
+      if (statSync(marker).mtimeMs < now - BANK_MARKER_TTL_MS) unlinkSync(marker)
+    }
+  } catch {}
+}
+
 // --- Cache warmth ---
 
 /**
@@ -399,9 +451,12 @@ export function peakContextTokens(turns: TurnMetrics[]): number {
  * against 17.6% observed, and is where that margin is widest.
  *
  * Warm because cold there is no saving left, and once per session because it
- * spends a turn the user did not ask for. Once per SESSION, not per project:
- * the state file is keyed by directory, so testing bankedAt alone retires the
- * feature permanently after its first use in a repo.
+ * spends a turn the user did not ask for. Once per SESSION, not per project
+ * and not per directory: the state file is keyed by the encoded cwd, so
+ * testing bankedAt alone retires the feature permanently after its first use
+ * in a repo, and testing bankedSession alone lets a session that moves
+ * directory pay again. The session-keyed ledger answers it in both
+ * directions.
  */
 export function shouldBankHandoff(
   state: JournalState,
@@ -411,6 +466,7 @@ export function shouldBankHandoff(
   sessionId: string | null,
   now: number = Date.now()
 ): boolean {
+  if (hasSessionBanked(sessionId)) return false
   if (state.bankedAt > 0 && state.bankedSession === sessionId) return false
   if (peakContext < minPeakContext) return false
   return isCacheWarm(transcriptPath, now)
@@ -504,6 +560,8 @@ export function capturePendingHandoff(
     promotedAt: 0,
   })
 
+  // Only a paid bank is recorded: see BANKED_DIR.
+  if (source === 'banked') markSessionBanked(sessionId, cwd, now)
   return true
 }
 

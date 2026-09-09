@@ -247,6 +247,42 @@ describe('journal', () => {
       ).toBe(true)
     })
 
+    it('refuses a second bank after the session changes directory', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // The bank happens in one repo; the session then moves to another, whose
+      // state file has never seen it. Without a session-keyed ledger the same
+      // session pays for a second handoff describing the same work.
+      j.capturePendingHandoff(CWD, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`, {
+        sessionId: 'wanderer',
+      })
+
+      const elsewhere = j.readJournalState('/home/user/project-b')
+      expect(elsewhere.bankedAt).toBe(0)
+      expect(
+        j.shouldBankHandoff(elsewhere, 400_000, 200_000, path, 'wanderer', warm)
+      ).toBe(false)
+    })
+
+    it('leaves a free compaction bank out of the ledger, so a new repo still gets one', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // Compaction judgement costs no turn, so there is no spend to protect,
+      // and recording it would leave the repo moved into with nothing banked.
+      j.capturePendingHandoff(CWD, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`, {
+        sessionId: 'wanderer',
+        source: 'compaction',
+      })
+
+      expect(j.hasSessionBanked('wanderer')).toBe(false)
+      expect(
+        j.shouldBankHandoff(
+          j.readJournalState('/home/user/project-b'),
+          400_000, 200_000, path, 'wanderer', warm
+        )
+      ).toBe(true)
+    })
+
     it('still refuses a second bank inside the same session', async () => {
       const j = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)

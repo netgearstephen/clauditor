@@ -47,10 +47,10 @@ describe('Stop hook banking, end to end', () => {
   }
 
   /** A transcript of `turns` assistant records whose peak context is `peak`. */
-  function transcriptWithPeak(turns: number, peak: number): string {
-    const path = join(home, `t-${turns}-${peak}.jsonl`)
+  function transcriptWithPeak(turns: number, peak: number, cwd: string = CWD): string {
+    const path = join(home, `t-${turns}-${peak}-${encodeCwd(cwd)}.jsonl`)
     const now = new Date().toISOString()
-    const recs: unknown[] = [{ type: 'user', cwd: CWD, timestamp: now }]
+    const recs: unknown[] = [{ type: 'user', cwd, timestamp: now }]
     for (let i = 0; i < turns; i++) {
       recs.push({
         type: 'assistant',
@@ -151,6 +151,27 @@ describe('Stop hook banking, end to end', () => {
 
     const out = runHook({ ...first, session_id: 'e2e-second' })
     expect(JSON.parse(out).decision).toBe('block')
+  }, 30_000)
+
+  it('does not bank twice when one session changes directory', () => {
+    // Bank state lives under the encoded cwd, and the cwd comes from the
+    // transcript, so a session that moves repo reads a state file that has
+    // never seen it and pays for a second handoff describing the same work.
+    const first = {
+      session_id: 'e2e-wanderer',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(first)
+    runHook({
+      ...first,
+      stop_hook_active: true,
+      last_assistant_message: `## Mission\nDone.\n${'x'.repeat(200)}\n[clauditor-banked-handoff]`,
+    })
+
+    const elsewhere = transcriptWithPeak(70, 400_000, '/home/user/project-b')
+    expect(JSON.parse(runHook({ ...first, transcript_path: elsewhere }))).toEqual({})
   }, 30_000)
 
   it('never blocks on a re-entrant invocation', () => {
