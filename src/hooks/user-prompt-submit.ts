@@ -1,4 +1,5 @@
 import { readStdin, isHookEntry } from './shared.js'
+import { allowWorkAfterBank, isExplicitContinue } from '../features/journal.js'
 
 /**
  * UserPromptSubmit hook — fires before Claude processes the user's prompt.
@@ -22,9 +23,21 @@ import { readStdin, isHookEntry } from './shared.js'
  * The handler is kept rather than deleted so that an installed hook
  * configuration pointing at it keeps working, and existing installs do not
  * start erroring on upgrade.
+ *
+ * It now reads one thing out of the prompt and still blocks nothing: an
+ * explicit instruction to keep working after a bank. The wind-down guard in
+ * PreToolUse has to be liftable by the user, and this is the only hook that
+ * sees what the user actually said. It never refuses a prompt, never injects
+ * context, and never delays anything: it sets a flag and gets out of the way.
  */
 export async function handleUserPromptSubmitHook(): Promise<void> {
-  await readStdin().catch(() => '')
+  const raw = await readStdin().catch(() => '')
+  try {
+    const input = JSON.parse(raw) as { session_id?: string; prompt?: string }
+    if (input.prompt && isExplicitContinue(input.prompt)) {
+      allowWorkAfterBank(input.session_id ?? null)
+    }
+  } catch {}
   process.stdout.write('{}')
 }
 

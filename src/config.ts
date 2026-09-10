@@ -31,11 +31,23 @@ export interface ClauditorUserConfig {
      *
      * A bank describes the session as it stood; work carries on immediately
      * afterwards, so the document is out of date from the moment it is
-     * written. Re-banking at 100k of growth costs roughly 55k
-     * price-normalised units against the 8.2% break-even, and keeps the
-     * document within one growth step of current.
+     * written.
+     *
+     * 50k, because 100k was above the drift it was meant to catch. Of the 321
+     * sessions that cross the 200k gate, the median grows 72k more before it
+     * ends, so at 100k the median banking session never refreshed at all and
+     * the document it left behind was missing a third of the session's turns.
+     * 50k refreshes 65% of them against 34% at 100k. The extra turn costs
+     * about 0.2 x C + 37,000 units warm, which is the cheapest write in the
+     * rotation and the only one that buys the document back from being stale.
      */
     reBankGrowth: number
+    /**
+     * After a session banks, refuse the tool calls that would make the banked
+     * handoff stale. Agents already running are unaffected; Bash and reads
+     * stay open so the handoff itself can still be updated.
+     */
+    blockAfterBank: boolean
   }
   notifications: {
     desktop: boolean
@@ -48,7 +60,8 @@ const DEFAULTS: ClauditorUserConfig = {
   rotation: {
     enabled: true,
     minPeakContext: 200_000,
-    reBankGrowth: 100_000,
+    reBankGrowth: 50_000,
+    blockAfterBank: true,
   },
   notifications: {
     desktop: true,

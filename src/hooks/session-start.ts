@@ -1,13 +1,12 @@
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { readdir, stat } from 'node:fs/promises'
-import { statSync } from 'node:fs'
 import type { HookDecision } from '../types.js'
 import { parseJsonlFile, extractTurns, extractModel } from '../daemon/parser.js'
 import { detectCacheDegradation } from '../features/cache-health.js'
 import { hasResumeBoundary, detectResumeAnomaly } from '../features/resume-detector.js'
 import { logActivity } from '../features/activity-log.js'
-import { readStdin, outputDecision, pruneStaleStateFiles, isHookEntry } from './shared.js'
+import { readStdin, outputDecision, pruneStaleStateFiles, isHookEntry, findTranscriptPathSync } from './shared.js'
 
 /**
  * SessionStart hook handler.
@@ -42,6 +41,9 @@ async function buildSessionStartContext(
   sessionId?: string,
 ): Promise<HookDecision> {
   const parts: string[] = []
+  // Goes to the user as systemMessage, so it is built outside the try and
+  // returned separately from the model-facing parts.
+  let advisory: string | null = null
 
   try {
     // Find recent sessions for this project
@@ -71,29 +73,37 @@ async function buildSessionStartContext(
 
     const summary = offerSummary(sessionId ?? null, cwd ?? null)
 
-    if (summary.kind !== 'none' && summary.content) {
-      const age = summary.path ? summaryAge(summary.path) : null
-      const when = age === null ? 'earlier' : age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`
+    // The handoff is advertised to the user, not injected into the model. It
+    // used to arrive as additionalContext with an instruction to render an
+    // offer and wait, which paid the whole entry cost and a model turn before
+    // the user had said whether they wanted it. A systemMessage costs neither.
+    if (summary.kind !== 'none' && summary.path) {
+      const { readJournalState, readSessionBank, msSinceLastTurn, readTurns } =
+        await import('../features/journal.js')
+      const { buildResumeAdvisory } = await import('../features/resume-advisory.js')
 
-      // The augmented summary carries judgement that was banked by a model;
-      // the mechanical one is a script's output and says only what git and the
-      // transcript say. The user is told which, because how far to trust a
-      // "decisions" section depends entirely on which one produced it.
-      const offer =
-        summary.kind === 'augmented'
-          ? `I have a full handoff from your last session here (${when}), ` +
-            `including the decisions and dead ends.`
-          : `I have a summary of your last session here (${when}): ` +
-            `branch, commits and files, but no reasoning.`
+      // The figures come from the banking session's OWN marker, never from the
+      // per-directory state. That state is shared by every session in the
+      // directory and its fields are updated independently, so two sessions
+      // banking in one directory leave it describing neither: observed live on
+      // 2026-09-10, where bankedSession named one session and bankedAtPeak
+      // held another's peak. The marker is per session and cannot mix them.
+      //
+      // Requiring the marker's own handoffPath to be the file being offered is
+      // what keeps the peak, the age and the document describing one session.
+      // Anything less certain falls through with no figures at all.
+      const state = readJournalState(cwd ?? null)
+      const bank = state.bankedSession ? readSessionBank(state.bankedSession) : null
+      const paired = bank !== null && bank.handoffPath === summary.path && bank.peakContext > 0
+      const transcript = paired ? findTranscriptPathSync(state.bankedSession) : null
 
-      parts.push(
-        `Before doing anything else, show the user this and wait for their answer:\n\n` +
-        `"clauditor: ${offer} ` +
-        `Continue from there, or start something new?"\n\n` +
-        `Do not act on the summary until they answer. If they are starting something new, ` +
-        `ignore it entirely rather than working it into the new task.\n\n` +
-        `--- summary (${summary.kind}) ---\n${summary.content}`
-      )
+      advisory = buildResumeAdvisory({
+        kind: summary.kind,
+        path: summary.path,
+        peakContext: paired ? bank.peakContext : 0,
+        ageMs: transcript ? msSinceLastTurn(transcript) : null,
+        model: (transcript ? readTurns(transcript).model : null) ?? undefined,
+      })
     }
 
     // Inject project knowledge brief (errors, hot files, recent context)
@@ -210,8 +220,10 @@ async function buildSessionStartContext(
     }).catch(() => {})
   }
 
-  if (parts.length === 0) return {}
-  return { additionalContext: parts.join('\n\n') }
+  const decision: HookDecision = {}
+  if (parts.length > 0) decision.additionalContext = parts.join('\n\n')
+  if (advisory) decision.systemMessage = advisory
+  return decision
 }
 
 /**
@@ -288,15 +300,6 @@ async function checkRecentSessions(projectsDir: string): Promise<string[]> {
 
   // Deduplicate and limit
   return [...new Set(issues)].slice(0, 3)
-}
-
-/** Age of a summary file in whole minutes, or null if it cannot be read. */
-function summaryAge(path: string): number | null {
-  try {
-    return Math.round((Date.now() - statSync(path).mtimeMs) / 60000)
-  } catch {
-    return null
-  }
 }
 
 // Run only when this module is the entry point: see isHookEntry.

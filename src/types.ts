@@ -230,6 +230,11 @@ export interface HookDecision {
   decision?: 'block' | 'approve'
   reason?: string
   additionalContext?: string
+  /**
+   * Text shown straight to the user, never to the model. Claude Code
+   * truncates it at 4,000 characters and 20 lines.
+   */
+  systemMessage?: string
 }
 
 // Model pricing table

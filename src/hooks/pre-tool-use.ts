@@ -4,6 +4,8 @@ import { resolve } from 'node:path'
 import type { PreToolUseHookInput, HookDecision } from '../types.js'
 import { readStdin, outputDecision, isHookEntry } from './shared.js'
 import { findKnownError } from '../features/error-index.js'
+import { isBlockedAfterBank } from '../features/journal.js'
+import { readConfig } from '../config.js'
 
 // Rate limit: only inject once per unique base command per session.
 function rateLimitFile(): string {
@@ -62,6 +64,35 @@ export function clearOutcomePending(): void {
 }
 
 /**
+ * Refuse work that would make an already-banked handoff stale.
+ *
+ * The bank describes the session as it stood. Anything substantial after it
+ * leaves a resuming session reading a document that has quietly gone out of
+ * date, and a newly dispatched agent is the worst case: its work lands after
+ * the document was written and nothing records it.
+ *
+ * Agents already running are untouched, since this sees only new calls, and
+ * Bash is never refused so the existing handoff can still be brought up to
+ * date. Returns null when nothing should be blocked.
+ */
+function blockedAfterBank(input: PreToolUseHookInput): HookDecision | null {
+  if (!readConfig().rotation.blockAfterBank) return null
+  if (!isBlockedAfterBank(input.session_id, input.tool_name)) return null
+  return {
+    decision: 'block',
+    reason:
+      `[clauditor] This session has already banked its handoff, so ${input.tool_name} is ` +
+      `refused: work after the bank makes that document describe a session that no longer ` +
+      `exists.\n\n` +
+      `Let any agents still running finish, and do not start new ones. If something genuinely ` +
+      `has to be recorded, append it to the existing handoff with a Bash command, which is not ` +
+      `blocked.\n\n` +
+      `Only the user can lift this. Do not lift it on your own initiative: ask them, and if ` +
+      `they want the session to carry on they should say "clauditor continue".`,
+  }
+}
+
+/**
  * PreToolUse hook handler — injects error prevention knowledge.
  *
  * Before Claude runs a Bash command, checks the error index for known failures.
@@ -83,6 +114,11 @@ export async function handlePreToolUseHook(): Promise<void> {
 }
 
 async function processPreToolUse(input: PreToolUseHookInput): Promise<HookDecision> {
+  // Wind-down after a bank. Checked before anything else, because it applies
+  // to tools this hook otherwise ignores.
+  const winddown = blockedAfterBank(input)
+  if (winddown) return winddown
+
   // Only check Bash commands
   if (input.tool_name !== 'Bash') return {}
 
