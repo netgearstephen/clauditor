@@ -79,3 +79,89 @@ describe('shouldIdleBank', () => {
     ).toBe('nothing')
   })
 })
+
+import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { beforeEach, afterEach, vi } from 'vitest'
+
+async function importFresh(tempDir: string) {
+  vi.resetModules()
+  vi.doMock('node:os', () => ({ homedir: () => tempDir }))
+  return await import('./idle-watchdog.js')
+}
+
+describe('the timer file', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-timer-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    vi.doUnmock('node:os')
+  })
+
+  const file = (over: Record<string, unknown> = {}) => ({
+    sessionId: 'sess-1',
+    timerPid: process.pid,
+    claudePid: process.pid,
+    socketPath: '/tmp/cc-socks/1.sock',
+    token: 'secret-token',
+    cwd: '/home/user/project-a',
+    transcriptPath: '/home/user/.claude/projects/p/sess-1.jsonl',
+    armedAt: 1_000,
+    firesAt: 2_000,
+    ...over,
+  })
+
+  it('round-trips what the timer needs to act', async () => {
+    const w = await importFresh(tempDir)
+    w.writeTimerFile(file() as never)
+    expect(w.readTimerFile('sess-1')).toEqual(file())
+  })
+
+  it('is readable only by its owner, because it carries a live token', async () => {
+    const w = await importFresh(tempDir)
+    w.writeTimerFile(file() as never)
+    const mode = statSync(w.timerFilePath('sess-1')).mode & 0o777
+    expect(mode).toBe(0o600)
+  })
+
+  it('returns null for a session with no timer, and for a corrupt file', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.readTimerFile('nobody')).toBeNull()
+    mkdirSync(w.TIMERS_DIR, { recursive: true })
+    writeFileSync(w.timerFilePath('broken'), '{ not json')
+    expect(w.readTimerFile('broken')).toBeNull()
+  })
+
+  it('refuses a session id that is not a plain file name', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.timerFilePath('../../escape')).toBeNull()
+    expect(w.readTimerFile('../../escape')).toBeNull()
+  })
+
+  it('sweeps a timer whose process is dead', async () => {
+    const w = await importFresh(tempDir)
+    // PID 2^22 is above every pid_max in use and owns nothing.
+    w.writeTimerFile(file({ sessionId: 'dead', timerPid: 4_194_304 }) as never)
+    w.sweepTimerFiles()
+    expect(existsSync(w.timerFilePath('dead')!)).toBe(false)
+  })
+
+  it('sweeps a timer whose session has exited, socket and all', async () => {
+    const w = await importFresh(tempDir)
+    w.writeTimerFile(file({ sessionId: 'gone', socketPath: join(tempDir, 'no.sock') }) as never)
+    w.sweepTimerFiles()
+    expect(existsSync(w.timerFilePath('gone')!)).toBe(false)
+  })
+
+  it('leaves a live timer alone', async () => {
+    const w = await importFresh(tempDir)
+    const sock = join(tempDir, 'live.sock')
+    writeFileSync(sock, '')
+    w.writeTimerFile(file({ sessionId: 'live', socketPath: sock }) as never)
+    w.sweepTimerFiles()
+    expect(existsSync(w.timerFilePath('live')!)).toBe(true)
+  })
+})
