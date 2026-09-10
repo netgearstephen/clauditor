@@ -18,6 +18,7 @@ import {
   recordBankRequest,
   readTurns,
   shouldBankHandoff,
+  readSessionBank,
   peakContextTokens,
   writeJournal,
 } from '../features/journal.js'
@@ -293,7 +294,11 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
     decision: 'block',
     reason: bankInstruction(peakContext, {
       stamp: handoffStamp(),
-      rewritePath: state.promotedPath,
+      // The session's OWN bank, never the per-directory state: that state
+      // carries whatever the last session in this repo promoted, and passing
+      // it here tells a session that has never banked to overwrite a document
+      // it did not write. That destroyed a real handoff on 2026-09-10.
+      rewritePath: readSessionBank(input.session_id)?.handoffPath ?? '',
     }),
   }
 }
@@ -331,8 +336,12 @@ function captureBankedHandoff(input: StopHookInput): void {
     return
   }
 
+  // The peak goes in with it: the marker it writes is what a re-bank measures
+  // growth against, and a marker recording 0 is read as "banked before peaks
+  // were recorded", which retires banking for the rest of the session.
   if (capturePendingHandoff(cwd, turns.length, msg, {
       sessionId: input.session_id,
+      peakContext: peakContextTokens(turns),
     })) {
     logActivity({
       type: 'context_warning',

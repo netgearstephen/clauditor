@@ -364,10 +364,62 @@ describe('journal', () => {
       expect(j.readJournalState(CWD).bankedAtTurn).toBe(80)
     })
 
+    it('records the document it produced and the peak it banked at', async () => {
+      const j = await importFresh(tempDir)
+      // The fallback route writes the judgement to clauditor's own pending
+      // path, and that file is the one a re-bank has to overwrite. A marker
+      // with an empty path sends the next bank off to write a second document,
+      // and the prompt the user already pasted then names the staler of the two.
+      j.capturePendingHandoff(CWD, 80, `## Mission\n${'x'.repeat(200)}\n${j.BANK_MARKER}`, {
+        sessionId: 'fallback-session',
+        peakContext: 143_000,
+      })
+
+      const bank = j.readSessionBank('fallback-session')
+      expect(bank?.handoffPath).toBe(j.pendingHandoffPath(CWD))
+      expect(bank?.peakContext).toBe(143_000)
+    })
+
     it('rejects a reply too short to be a handoff', async () => {
       const j = await importFresh(tempDir)
       expect(j.capturePendingHandoff(CWD, 80, `ok ${j.BANK_MARKER}`)).toBe(false)
       expect(existsSync(j.pendingHandoffPath(CWD))).toBe(false)
+    })
+  })
+
+  describe('the journal state under two concurrent sessions', () => {
+    it('applies an update to the state as it stands, not to a stale snapshot', async () => {
+      const j = await importFresh(tempDir)
+      // Observed live on 2026-09-10: two sessions banking in one directory left
+      // its state.json with bankedSession naming one, bankedAtPeak holding the
+      // other's peak, and promotedAt reset to 0. Each had read the state, then
+      // written its own whole object back over the other's fields.
+      const stale = j.readJournalState(CWD)
+
+      // The other session banks while this one is holding that snapshot.
+      j.writeJournalState(CWD, { ...stale, bankedSession: 'session-b', bankedAtPeak: 512_000 })
+
+      // This session now finishes the update it began from the stale snapshot.
+      j.updateJournalState(CWD, (state) => ({ ...state, promotedPath: '/a.md', promotedAt: 5 }))
+
+      const after = j.readJournalState(CWD)
+      expect(after.promotedPath).toBe('/a.md')
+      expect(after.promotedAt).toBe(5)
+      expect(after.bankedSession).toBe('session-b')
+      expect(after.bankedAtPeak).toBe(512_000)
+    })
+
+    it('writes anyway when a lock is left behind by a session that died', async () => {
+      const j = await importFresh(tempDir)
+      mkdirSync(j.journalDir(CWD), { recursive: true })
+      const lock = join(j.journalDir(CWD), 'state.json.lock')
+      writeFileSync(lock, 'held')
+      const old = Date.now() / 1000 - 3600
+      utimesSync(lock, old, old)
+
+      j.updateJournalState(CWD, (state) => ({ ...state, bankedAtTurn: 42 }))
+
+      expect(j.readJournalState(CWD).bankedAtTurn).toBe(42)
     })
   })
 
@@ -507,6 +559,53 @@ describe('journal', () => {
       const stored = readFileSync(adopted ?? mine, 'utf-8')
       expect(stored).toContain('**Session**: this-session')
       expect(stored).not.toContain('previous-session')
+    })
+
+    it('declines a bank request another session made', async () => {
+      const j = await importFresh(tempDir)
+      // The state can carry a request this session never answered: a previous
+      // session's request in the same repo, or one the user interrupted.
+      j.recordBankRequest(CWD, Date.now(), 0, 'other-session')
+      const theirs = modelWrites(join(handoffs(tempDir), 'theirs-20260910-0918.md'))
+
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 'mine' })).toBeNull()
+      expect(readFileSync(theirs, 'utf-8')).toBe(judgement)
+    })
+
+    it('never adopts a document another session banked', async () => {
+      const j = await importFresh(tempDir)
+      fakeFactsScript(tempDir)
+      j.recordBankRequest(CWD, Date.now(), 0, 'mine')
+      // The handoffs directory is shared by every repo, so the newest file in
+      // it since the request can belong to a different session entirely.
+      const theirs = modelWrites(
+        join(handoffs(tempDir), 'theirs-20260910-0918.md'),
+        `# Handoff: Theirs\n\n**Repo**: /home/user/project-b\n**Session**: their-session\n\n## Mission\n${'x'.repeat(200)}\n`
+      )
+
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 'mine' })).toBeNull()
+      const left = readFileSync(theirs, 'utf-8')
+      expect(left).toContain('**Session**: their-session')
+      expect(left).not.toContain('mine')
+    })
+
+    it('does not re-bank over a promotedPath that now names another session', async () => {
+      const j = await importFresh(tempDir)
+      fakeFactsScript(tempDir)
+      // A state can point at a document that is not this session's, whether
+      // from an earlier defect or a file the user moved. Reusing it verbatim
+      // would overwrite that session's handoff on every later re-bank.
+      const theirs = modelWrites(
+        join(handoffs(tempDir), 'theirs-20260910-0918.md'),
+        `# Handoff: Theirs\n\n**Repo**: /home/user/project-b\n**Session**: their-session\n\n## Mission\n${'x'.repeat(200)}\n`
+      )
+      j.recordBankRequest(CWD, Date.now(), 0, 'mine')
+      j.writeJournalState(CWD, { ...j.readJournalState(CWD), promotedPath: theirs })
+      const mine = modelWrites(join(handoffs(tempDir), 'mine-20260910-0925.md'))
+
+      const adopted = j.adoptBankedHandoff(CWD, 80, { sessionId: 'mine' })
+      expect(adopted).toBe(mine)
+      expect(readFileSync(theirs, 'utf-8')).toContain('**Session**: their-session')
     })
 
     it('finds the file even when the reply names no path', async () => {
@@ -850,5 +949,87 @@ describe('journal', () => {
       // The saving is the 1.9x spread between a warm read and a cold rewrite.
       expect(text).not.toContain('waste')
     })
+  })
+})
+
+describe('winding down after a bank', () => {
+  let tempDir: string
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-winddown-'))
+  })
+
+  afterEach(() => {
+    vi.doUnmock('node:os')
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it('allows every tool while the session has not banked', async () => {
+    const { isBlockedAfterBank } = await importFresh(tempDir)
+    for (const tool of ['Task', 'Edit', 'Write', 'Bash', 'Read']) {
+      expect(isBlockedAfterBank('s-1', tool)).toBe(false)
+    }
+  })
+
+  it('blocks a new agent once the session has banked', async () => {
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000 })
+    expect(isBlockedAfterBank('s-1', 'Task')).toBe(true)
+  })
+
+  it('blocks the edits that would make the banked handoff stale', async () => {
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000 })
+    for (const tool of ['Edit', 'Write', 'NotebookEdit']) {
+      expect(isBlockedAfterBank('s-1', tool)).toBe(true)
+    }
+  })
+
+  it('never blocks Bash, which is how the handoff itself gets updated', async () => {
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000 })
+    // Stephen: "we won't block bash calls to update that (if needed)".
+    expect(isBlockedAfterBank('s-1', 'Bash')).toBe(false)
+    expect(isBlockedAfterBank('s-1', 'Read')).toBe(false)
+  })
+
+  it('blocks only the session that banked, not its neighbours', async () => {
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000 })
+    expect(isBlockedAfterBank('s-2', 'Task')).toBe(false)
+  })
+
+  it('lifts the block once work after the bank is explicitly allowed', async () => {
+    const { markSessionBanked, allowWorkAfterBank, isBlockedAfterBank } =
+      await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000 })
+    allowWorkAfterBank('s-1')
+    for (const tool of ['Task', 'Edit', 'Write']) {
+      expect(isBlockedAfterBank('s-1', tool)).toBe(false)
+    }
+  })
+
+  it('keeps the bank itself intact when the block is lifted', async () => {
+    const { markSessionBanked, allowWorkAfterBank, readSessionBank } =
+      await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), {
+      peakContext: 210_000,
+      handoffPath: '/tmp/h.md',
+    })
+    allowWorkAfterBank('s-1')
+    const bank = readSessionBank('s-1')
+    // Losing these would let the session bank a second time for the same work.
+    expect(bank?.peakContext).toBe(210_000)
+    expect(bank?.handoffPath).toBe('/tmp/h.md')
+  })
+
+  it('recognises an explicit continue in the user prompt', async () => {
+    const { isExplicitContinue } = await importFresh(tempDir)
+    expect(isExplicitContinue('clauditor continue')).toBe(true)
+    expect(isExplicitContinue('Clauditor: continue please')).toBe(true)
+    expect(isExplicitContinue('continue in this session')).toBe(true)
+    // Ordinary encouragement is not permission.
+    expect(isExplicitContinue('continue')).toBe(false)
+    expect(isExplicitContinue('carry on with the next task')).toBe(false)
   })
 })

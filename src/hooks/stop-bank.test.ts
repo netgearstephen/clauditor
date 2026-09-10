@@ -216,6 +216,66 @@ describe('Stop hook banking, end to end', () => {
     expect(reason).toContain(written)
   }, 30_000)
 
+  it('re-banks into the document it produced when the reply was the fallback', () => {
+    // The fallback route captures the judgement out of the reply, so the
+    // document lives at clauditor's own pending path and no file in the
+    // handoffs directory names it. Recording an empty path there sent the
+    // re-bank off to write a second document, leaving the first to rot.
+    const request = {
+      session_id: 'e2e-fallback',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(request)
+    runHook({
+      ...request,
+      stop_hook_active: true,
+      last_assistant_message:
+        `## Mission\nAt 400k, in the reply.\n${'x'.repeat(200)}\n[clauditor-banked-handoff]`,
+    })
+    expect(existsSync(pendingPath())).toBe(true)
+
+    // 400k at the bank, and the default growth step is 100k.
+    const grown = transcriptWithPeak(90, 560_000)
+    const reason = JSON.parse(runHook({ ...request, transcript_path: grown })).reason as string
+    expect(reason).toContain('Overwrite this file')
+    expect(reason).toContain(pendingPath())
+  }, 30_000)
+
+  it('never tells a session to overwrite a handoff it did not write', () => {
+    // The journal state is per DIRECTORY, so a session that has never banked
+    // still reads the previous session's promotedPath out of it. Passed
+    // through as the rewrite path, the instruction tells the model to
+    // "overwrite this file, which your earlier bank in this session
+    // produced", naming another session's document. This destroyed a real
+    // handoff on 2026-09-10: c3bdfd2a overwrote d231272f's.
+    const first = {
+      session_id: 'e2e-owner',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(first)
+    const theirs = join(home, '.claude', 'handoffs', 'theirs-20260909-1400.md')
+    mkdirSync(dirname(theirs), { recursive: true })
+    writeFileSync(theirs, `# Handoff: Theirs\n\n## Mission\nTheirs.\n${'x'.repeat(200)}\n`)
+    runHook({
+      ...first,
+      stop_hook_active: true,
+      last_assistant_message: `Read \`${theirs}\`\n[clauditor-banked-handoff]`,
+    })
+
+    // A different session, in the same directory, banking for the first time.
+    const reason = JSON.parse(
+      runHook({ ...first, session_id: 'e2e-newcomer' })
+    ).reason as string
+    expect(reason).not.toContain('Overwrite this file')
+    expect(reason).not.toContain(theirs)
+    // It is a first bank, so it is given the naming rule instead.
+    expect(reason).toContain('Write the handoff with the Write tool to')
+  }, 30_000)
+
   it('does not bank twice when one session changes directory', () => {
     // Bank state lives under the encoded cwd, and the cwd comes from the
     // transcript, so a session that moves repo reads a state file that has

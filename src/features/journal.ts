@@ -1,6 +1,7 @@
 import {
   readFileSync,
   writeFileSync,
+  renameSync,
   mkdirSync,
   existsSync,
   statSync,
@@ -150,8 +151,80 @@ export function readJournalState(cwd: string | null): JournalState {
 export function writeJournalState(cwd: string | null, state: JournalState): void {
   try {
     mkdirSync(journalDir(cwd), { recursive: true })
-    writeFileSync(statePath(cwd), JSON.stringify(state, null, 2))
+    // Written to one side and renamed into place, so a reader never catches a
+    // half-written file. Rename is atomic within a directory; writing in place
+    // is not.
+    const tmp = `${statePath(cwd)}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(state, null, 2))
+    renameSync(tmp, statePath(cwd))
   } catch {}
+}
+
+/** How long a lock is honoured before its holder is assumed to have died. */
+const STATE_LOCK_STALE_MS = 5_000
+
+/** How long an update waits for another session's lock before going ahead. */
+const STATE_LOCK_WAIT_MS = 2_000
+
+/** Block this thread. Hooks are synchronous, so there is nothing to await. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/**
+ * Apply a change to the journal state, reading it inside the lock that guards
+ * the write.
+ *
+ * The state is per DIRECTORY, so two sessions working in one repo share it,
+ * and every caller here is a read-modify-write: read the whole object, change
+ * two fields, write the whole object back. Two of those interleaving lose one
+ * session's fields entirely. Observed on 2026-09-10 in
+ * `.../netgear-project-visibility/design/phase-1`, whose state ended up with
+ * `bankedSession` naming one session, `bankedAtPeak` holding the other's peak,
+ * `promotedPath` pointing at the first's document and `promotedAt` reset to 0.
+ * An atomic write prevents a torn file, not a lost update; only holding the
+ * read and the write together does that.
+ *
+ * A lock is never allowed to stop a write. If another session's lock is still
+ * there after the wait, or was left behind by one that died, this goes ahead
+ * anyway: a state file that is one field behind is a far smaller problem than
+ * a hook that hangs on a stop.
+ */
+export function updateJournalState(
+  cwd: string | null,
+  mutate: (state: JournalState) => JournalState
+): JournalState {
+  const lock = `${statePath(cwd)}.lock`
+  try {
+    mkdirSync(journalDir(cwd), { recursive: true })
+  } catch {}
+
+  let held = false
+  const deadline = Date.now() + STATE_LOCK_WAIT_MS
+  for (;;) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' })
+      held = true
+      break
+    } catch {}
+    try {
+      if (statSync(lock).mtimeMs < Date.now() - STATE_LOCK_STALE_MS) {
+        unlinkSync(lock)
+        continue
+      }
+    } catch {}
+    if (Date.now() >= deadline) break
+    sleepSync(25)
+  }
+
+  const next = mutate(readJournalState(cwd))
+  writeJournalState(cwd, next)
+  if (held) {
+    try {
+      unlinkSync(lock)
+    } catch {}
+  }
+  return next
 }
 
 /**
@@ -188,6 +261,9 @@ export interface SessionBank {
   peakContext: number
   /** The handoff file it produced, so a re-bank can overwrite that one. */
   handoffPath: string
+  /** Set once the user has explicitly asked to keep working in this session
+   * after the bank. Absent on a fresh bank, so a re-bank re-arms the block. */
+  continueAfterBank?: boolean
 }
 
 /** This session's bank, from any directory, or null if it has not banked. */
@@ -201,6 +277,7 @@ export function readSessionBank(sessionId: string | null): SessionBank | null {
       cwd: raw.cwd ?? null,
       peakContext: raw.peakContext ?? 0,
       handoffPath: raw.handoffPath ?? '',
+      continueAfterBank: raw.continueAfterBank === true,
     }
   } catch {
     return null
@@ -236,6 +313,68 @@ export function markSessionBanked(
       if (statSync(marker).mtimeMs < now - BANK_MARKER_TTL_MS) unlinkSync(marker)
     }
   } catch {}
+}
+
+/**
+ * The tools that would make a banked handoff stale.
+ *
+ * A bank describes the session as it stood. Work that lands afterwards is work
+ * the document does not mention, so a resuming session is told a story that has
+ * already moved on. Dispatching a new agent is the worst case: its output
+ * arrives long after the document was written and nothing records it.
+ *
+ * Bash is deliberately absent. Stephen: "Any work that needs to be done can be
+ * added to the existing handoff if not already there - we won't block bash
+ * calls to update that (if needed)." Reads are absent for the same reason:
+ * looking at something changes nothing a handoff would have to describe.
+ */
+export const WORK_TOOLS_AFTER_BANK = ['Task', 'Edit', 'Write', 'NotebookEdit']
+
+/**
+ * Should this tool call be refused because the session has already banked?
+ *
+ * Keyed by session, never by directory, for the reason the whole ledger is:
+ * a session that changes directory is still the same session, and a different
+ * session in the same repo has its own handoff to protect.
+ *
+ * Agents already running are untouched. This gate sees only new calls, so work
+ * in flight finishes and gets recorded, which is what the bank instruction's
+ * `## In-flight agents` section is for.
+ */
+export function isBlockedAfterBank(sessionId: string | null, toolName: string): boolean {
+  if (!WORK_TOOLS_AFTER_BANK.includes(toolName)) return false
+  const bank = readSessionBank(sessionId)
+  if (!bank) return false
+  return bank.continueAfterBank !== true
+}
+
+/**
+ * Record that the user has explicitly asked to carry on in this session.
+ *
+ * The bank's own fields are preserved: losing them would let the session bank
+ * a second time for work it has already described.
+ */
+export function allowWorkAfterBank(sessionId: string | null): void {
+  const path = bankMarkerPath(sessionId)
+  const bank = readSessionBank(sessionId)
+  if (!path || !bank) return
+  try {
+    writeFileSync(path, JSON.stringify({ ...bank, continueAfterBank: true }, null, 2))
+  } catch {}
+}
+
+/**
+ * Did the user explicitly ask to keep working after the bank?
+ *
+ * Deliberately narrow. A bare "continue" is ordinary encouragement and means
+ * only "keep going with what you were doing"; lifting a guard on it would make
+ * the guard meaningless. The phrase has to name clauditor or name the session.
+ */
+export function isExplicitContinue(prompt: string): boolean {
+  return (
+    /\bclauditor\b[\s,:—-]*continue\b/i.test(prompt) ||
+    /\bcontinue\s+in\s+this\s+session\b/i.test(prompt)
+  )
 }
 
 // --- Cache warmth ---
@@ -435,11 +574,11 @@ export function writeJournal(
     return false
   }
 
-  writeJournalState(cwd, {
-    ...state,
+  updateJournalState(cwd, (current) => ({
+    ...current,
     lastWriteAt: now,
     lastFingerprint: fingerprint,
-  })
+  }))
   return true
 }
 
@@ -685,13 +824,12 @@ export function recordBankRequest(
   try {
     mkdirSync(journalDir(cwd), { recursive: true })
   } catch {}
-  const state = readJournalState(cwd)
-  writeJournalState(cwd, {
-    ...state,
+  updateJournalState(cwd, (current) => ({
+    ...current,
     bankRequestedAt: now,
     bankRequestedAtPeak: peakContext,
     bankRequestedSession: sessionId ?? '',
-  })
+  }))
 }
 
 /**
@@ -725,6 +863,12 @@ export function adoptBankedHandoff(
 ): string | null {
   const state = readJournalState(cwd)
   if (state.bankRequestedAt === 0) return null
+  // The state is per directory, so the request it records can belong to a
+  // different session: one that abandoned its request, or a state edited by
+  // hand. Adopting on someone else's request is how a session came to
+  // overwrite another session's banked document. An empty id is a state
+  // written before the field existed, and stays adoptable.
+  if (state.bankRequestedSession && state.bankRequestedSession !== sessionId) return null
 
   // A second of slack: the file is stamped by the filesystem, the request by
   // this process, and the two clocks need not agree to the millisecond.
@@ -765,12 +909,19 @@ export function adoptBankedHandoff(
     }
     const judgement = stripPlumbing(raw)
     if (judgement.length < 100) continue
+    if (belongsElsewhere(judgement, sessionId, cwd)) continue
 
     // A re-bank overwrites the file the first bank produced, so a prompt the
     // user has already pasted keeps naming the current document. A model that
     // wrote to clauditor's own path instead gets the document moved where the
     // user can find it, named from its title.
-    const target = state.promotedPath
+    // The recorded path is reused so a re-bank replaces the document the first
+    // bank produced. It is only reused while it still describes this session:
+    // a path left over from a bank that landed elsewhere would otherwise be
+    // overwritten on every re-bank.
+    const reusable =
+      state.promotedPath !== '' && !belongsElsewhere(readIfPresent(state.promotedPath), sessionId, cwd)
+    const target = reusable
       ? state.promotedPath
       : candidate.startsWith(HANDOFFS_DIR)
         ? candidate
@@ -802,8 +953,8 @@ export function adoptBankedHandoff(
       } catch {}
     }
 
-    writeJournalState(cwd, {
-      ...state,
+    updateJournalState(cwd, (current) => ({
+      ...current,
       bankedAt: now,
       bankedAtTurn: turns,
       bankedSession: sessionId ?? '',
@@ -811,12 +962,43 @@ export function adoptBankedHandoff(
       promotedPath: target,
       // Already in the user's directory, so there is nothing left to promote.
       promotedAt: now,
-    })
+    }))
     markSessionBanked(sessionId, cwd, now, { peakContext, handoffPath: target })
     return target
   }
 
   return null
+}
+
+/**
+ * Does this document already declare itself another session's, or another
+ * repo's? The handoffs directory is shared by every repo, so the newest file
+ * written since the request need not be the one this session wrote: a second
+ * session banking moments later would otherwise assemble its own mechanical
+ * half on top of the first session's judgement.
+ *
+ * A document carrying neither header is the ordinary case, since the model
+ * writes the judgement and the mechanical half is merged in afterwards.
+ */
+function belongsElsewhere(
+  document: string,
+  sessionId: string | null,
+  cwd: string | null
+): boolean {
+  const session = /^\*\*Session\*\*:\s*(\S+)/m.exec(document)?.[1]
+  if (session && sessionId && session !== sessionId) return true
+  const repo = /^\*\*Repo\*\*:\s*(.+?)\s*$/m.exec(document)?.[1]
+  if (repo && cwd && repo !== cwd) return true
+  return false
+}
+
+/** A file's text, or empty when it cannot be read. */
+function readIfPresent(path: string): string {
+  try {
+    return readFileSync(path, 'utf-8')
+  } catch {
+    return ''
+  }
 }
 
 /** Strip the hook-to-model plumbing out of a document a person will read. */
@@ -847,8 +1029,14 @@ function storeJudgement(
   {
     sessionId = null,
     source = 'banked',
+    peakContext = 0,
     now = Date.now(),
-  }: { sessionId?: string | null; source?: JudgementSource; now?: number } = {}
+  }: {
+    sessionId?: string | null
+    source?: JudgementSource
+    peakContext?: number
+    now?: number
+  } = {}
 ): boolean {
   const body = stripPlumbing(message)
   if (body.length < 100) return false
@@ -863,19 +1051,27 @@ function storeJudgement(
     return false
   }
 
-  const state = readJournalState(cwd)
-  writeJournalState(cwd, {
-    ...state,
+  updateJournalState(cwd, (current) => ({
+    ...current,
     bankedAt: now,
     bankedAtTurn: turns,
     bankedSession: sessionId ?? '',
     // A new session's bank supersedes the last one, so the previous
     // promotion must not keep promoteIfUsed from offering this one.
     promotedAt: 0,
-  })
+  }))
 
   // Only a paid bank is recorded: see BANKED_DIR.
-  if (source === 'banked') markSessionBanked(sessionId, cwd, now)
+  //
+  // The pending path is this bank's document, and recording it is what makes a
+  // re-bank overwrite that file rather than write a second one. A marker left
+  // with an empty path hands bankInstruction no rewritePath, and the prompt the
+  // user has already pasted goes quietly stale.
+  if (source === 'banked')
+    markSessionBanked(sessionId, cwd, now, {
+      peakContext,
+      handoffPath: pendingHandoffPath(cwd),
+    })
   return true
 }
 
@@ -889,7 +1085,12 @@ export function capturePendingHandoff(
   cwd: string | null,
   turns: number,
   message: string,
-  opts: { sessionId?: string | null; source?: JudgementSource; now?: number } = {}
+  opts: {
+    sessionId?: string | null
+    source?: JudgementSource
+    peakContext?: number
+    now?: number
+  } = {}
 ): boolean {
   return storeJudgement(cwd, turns, message, opts)
 }
@@ -1006,8 +1207,7 @@ export function promoteHandoff(
     unlinkSync(pendingHandoffPath(cwd))
   } catch {}
 
-  const state = readJournalState(cwd)
-  writeJournalState(cwd, { ...state, promotedAt: now.getTime() })
+  updateJournalState(cwd, (current) => ({ ...current, promotedAt: now.getTime() }))
   return target
 }
 
