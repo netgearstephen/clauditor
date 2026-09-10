@@ -164,7 +164,9 @@ export function sweepTimerFiles(): void {
       continue
     }
     if (!isProcessAlive(file.timerPid) || !existsSync(file.socketPath)) {
-      deleteTimerFile(file.sessionId)
+      try {
+        unlinkSync(resolve(TIMERS_DIR, name))
+      } catch {}
     }
   }
 }

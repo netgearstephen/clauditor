@@ -164,4 +164,38 @@ describe('the timer file', () => {
     w.sweepTimerFiles()
     expect(existsSync(w.timerFilePath('live')!)).toBe(true)
   })
+
+  it('sweeps a dead file by name, not by its recorded sessionId', async () => {
+    // A timer file whose sessionId field names a different, live session.
+    // The sweep must delete the dead file by name, not route through deleteTimerFile,
+    // which would delete the wrong file.
+    const w = await importFresh(tempDir)
+    const liveSocket = join(tempDir, 'live.sock')
+    writeFileSync(liveSocket, '')
+    
+    // Write a live timer for 'session-a' with a live process
+    w.writeTimerFile(file({ sessionId: 'session-a', timerPid: process.pid, socketPath: liveSocket }) as never)
+    
+    // Manually create a dead timer file with filename 'dead-file.json' but sessionId content pointing to 'session-a'
+    const deadPath = w.timerFilePath('dead-file')!
+    const corruptedContent = JSON.stringify({
+      sessionId: 'session-a',  // points to the live session
+      timerPid: 4_194_304,  // dead pid
+      claudePid: process.pid,
+      socketPath: liveSocket,
+      token: 'secret-token',
+      cwd: '/home/user/project-a',
+      transcriptPath: '/home/user/.claude/projects/p/sess-1.jsonl',
+      armedAt: 1_000,
+      firesAt: 2_000,
+    }, null, 2)
+    writeFileSync(deadPath, corruptedContent, { mode: 0o600 })
+    
+    w.sweepTimerFiles()
+    
+    // The dead file should be deleted by its actual filename
+    expect(existsSync(w.timerFilePath('dead-file')!)).toBe(false)
+    // The live session's file should still exist, untouched
+    expect(existsSync(w.timerFilePath('session-a')!)).toBe(true)
+  })
 })
