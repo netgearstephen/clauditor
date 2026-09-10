@@ -51,7 +51,7 @@ describe('winding down after a bank, end to end', () => {
   }
 
   /** Stand in for a bank this session has already paid for. */
-  function markBanked(): void {
+  function markBanked(extra: Record<string, unknown> = {}): void {
     const dir = join(home, '.clauditor', 'banked')
     mkdirSync(dir, { recursive: true })
     writeFileSync(
@@ -61,6 +61,7 @@ describe('winding down after a bank, end to end', () => {
         cwd: CWD,
         peakContext: 210_000,
         handoffPath: '/tmp/h.md',
+        ...extra,
       })
     )
   }
@@ -86,6 +87,17 @@ describe('winding down after a bank, end to end', () => {
     for (const tool of ['Edit', 'Write', 'NotebookEdit']) {
       expect(run(PRE_TOOL_USE, toolCall(tool)).decision).toBe('block')
     }
+  }, 30_000)
+
+  it('lets a session answer the re-bank it was just asked for', () => {
+    // The Stop hook stamps the marker when it asks for a re-bank. Refusing
+    // Write here would make its own request unanswerable.
+    markBanked({ bankRequestedAt: Date.now() + 1000 })
+    for (const tool of ['Write', 'Edit', 'NotebookEdit']) {
+      expect(run(PRE_TOOL_USE, toolCall(tool)).decision).toBeUndefined()
+    }
+    // A new agent is still refused: no request has ever needed one.
+    expect(run(PRE_TOOL_USE, toolCall('Task')).decision).toBe('block')
   }, 30_000)
 
   it('never refuses Bash, which is how the handoff gets updated', () => {

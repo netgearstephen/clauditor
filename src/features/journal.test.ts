@@ -387,6 +387,55 @@ describe('journal', () => {
     })
   })
 
+  describe('the guard against a re-bank it was asked for', () => {
+    const banked = (j: typeof import('./journal.js'), now = Date.now()) =>
+      j.markSessionBanked('rebanker', CWD, now, {
+        peakContext: 210_000,
+        handoffPath: '/h/first.md',
+      })
+
+    it('lets the session write the handoff it has just been asked for', async () => {
+      const j = await importFresh(tempDir)
+      // The Stop hook asks for a re-bank and names the file to overwrite. The
+      // guard refusing Write makes that request unanswerable, and the session
+      // falls back to reciting the whole document into the terminal.
+      banked(j)
+      j.markBankRequested('rebanker', Date.now() + 1000)
+
+      expect(j.isBlockedAfterBank('rebanker', 'Write')).toBe(false)
+      expect(j.isBlockedAfterBank('rebanker', 'Edit')).toBe(false)
+    })
+
+    it('still refuses a new agent, which no request ever needs', async () => {
+      const j = await importFresh(tempDir)
+      banked(j)
+      j.markBankRequested('rebanker', Date.now() + 1000)
+
+      expect(j.isBlockedAfterBank('rebanker', 'Task')).toBe(true)
+    })
+
+    it('closes again once the re-bank has been captured', async () => {
+      const j = await importFresh(tempDir)
+      banked(j)
+      j.markBankRequested('rebanker', Date.now() + 1000)
+      // The answer arrives and is banked, which supersedes the request.
+      j.markSessionBanked('rebanker', CWD, Date.now() + 2000, {
+        peakContext: 320_000,
+        handoffPath: '/h/first.md',
+      })
+
+      expect(j.isBlockedAfterBank('rebanker', 'Write')).toBe(true)
+    })
+
+    it('ignores a request older than the bank that answered it', async () => {
+      const j = await importFresh(tempDir)
+      j.markBankRequested('rebanker', 1000)
+      banked(j, 2000)
+
+      expect(j.isBlockedAfterBank('rebanker', 'Write')).toBe(true)
+    })
+  })
+
   describe('the journal state under two concurrent sessions', () => {
     it('applies an update to the state as it stands, not to a stale snapshot', async () => {
       const j = await importFresh(tempDir)

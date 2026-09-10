@@ -243,6 +243,39 @@ describe('Stop hook banking, end to end', () => {
     expect(reason).toContain(pendingPath())
   }, 30_000)
 
+  it('gives a re-banking session its tools back, so it can write the file it was told to overwrite', () => {
+    // The guard blocks Write after a bank. The re-bank instruction says
+    // "Overwrite this file", so without the stamp the request cannot be
+    // answered by writing at all, and the whole document lands in the
+    // terminal instead.
+    const request = {
+      session_id: 'e2e-rebank-guard',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(request)
+    const written = join(home, '.claude', 'handoffs', 'first-20260909-1400.md')
+    mkdirSync(dirname(written), { recursive: true })
+    writeFileSync(written, `# Handoff: First\n\n## Mission\nAt 400k.\n${'x'.repeat(200)}\n`)
+    runHook({
+      ...request,
+      stop_hook_active: true,
+      last_assistant_message: `Read \`${written}\`\n[clauditor-banked-handoff]`,
+    })
+
+    const marker = join(home, '.clauditor', 'banked', 'e2e-rebank-guard.json')
+    const banked = JSON.parse(readFileSync(marker, 'utf-8'))
+    expect(banked.bankRequestedAt ?? 0).toBeLessThanOrEqual(banked.bankedAt)
+
+    // 400k at the bank, and the default growth step is 100k.
+    const grown = transcriptWithPeak(90, 560_000)
+    runHook({ ...request, transcript_path: grown })
+
+    const after = JSON.parse(readFileSync(marker, 'utf-8'))
+    expect(after.bankRequestedAt).toBeGreaterThan(after.bankedAt)
+  }, 30_000)
+
   it('never tells a session to overwrite a handoff it did not write', () => {
     // The journal state is per DIRECTORY, so a session that has never banked
     // still reads the previous session's promotedPath out of it. Passed

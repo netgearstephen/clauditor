@@ -264,6 +264,9 @@ export interface SessionBank {
   /** Set once the user has explicitly asked to keep working in this session
    * after the bank. Absent on a fresh bank, so a re-bank re-arms the block. */
   continueAfterBank?: boolean
+  /** When a re-bank was last asked for. Newer than bankedAt means the request
+   * is still outstanding, and the session needs its tools back to answer it. */
+  bankRequestedAt?: number
 }
 
 /** This session's bank, from any directory, or null if it has not banked. */
@@ -278,6 +281,7 @@ export function readSessionBank(sessionId: string | null): SessionBank | null {
       peakContext: raw.peakContext ?? 0,
       handoffPath: raw.handoffPath ?? '',
       continueAfterBank: raw.continueAfterBank === true,
+      bankRequestedAt: raw.bankRequestedAt ?? 0,
     }
   } catch {
     return null
@@ -316,6 +320,24 @@ export function markSessionBanked(
 }
 
 /**
+ * Stamp the session's own marker with a re-bank request.
+ *
+ * Session-keyed, like everything else about the ledger, because the guard it
+ * lifts is session-keyed too. The per-directory state records the same request
+ * for the adoption path, and the two are written together.
+ */
+export function markBankRequested(sessionId: string | null, now: number = Date.now()): void {
+  const path = bankMarkerPath(sessionId)
+  const bank = readSessionBank(sessionId)
+  // Nothing to stamp before the first bank: the guard is not armed then, so a
+  // first request needs no exemption.
+  if (!path || !bank) return
+  try {
+    writeFileSync(path, JSON.stringify({ ...bank, bankRequestedAt: now }, null, 2))
+  } catch {}
+}
+
+/**
  * The tools that would make a banked handoff stale.
  *
  * A bank describes the session as it stood. Work that lands afterwards is work
@@ -329,6 +351,18 @@ export function markSessionBanked(
  * looking at something changes nothing a handoff would have to describe.
  */
 export const WORK_TOOLS_AFTER_BANK = ['Task', 'Edit', 'Write', 'NotebookEdit']
+
+/**
+ * The tools a session must have back to answer a bank request.
+ *
+ * The Stop hook's re-bank instruction says "Overwrite this file", and the
+ * guard refused exactly that: `Write` is on the blocked list, so the request
+ * could not be answered by writing, and the model fell back to reciting the
+ * whole document into the terminal, which is the behaviour banking to a file
+ * existed to end. `Task` is deliberately absent: no request has ever needed a
+ * new agent.
+ */
+const BANK_ANSWER_TOOLS = ['Edit', 'Write', 'NotebookEdit']
 
 /**
  * Should this tool call be refused because the session has already banked?
@@ -345,7 +379,14 @@ export function isBlockedAfterBank(sessionId: string | null, toolName: string): 
   if (!WORK_TOOLS_AFTER_BANK.includes(toolName)) return false
   const bank = readSessionBank(sessionId)
   if (!bank) return false
-  return bank.continueAfterBank !== true
+  if (bank.continueAfterBank === true) return false
+  // A re-bank asked for and not yet answered. The request supersedes the guard
+  // for the tools that answer it, and the bank that answers it re-arms the
+  // guard by rewriting the marker without the stamp.
+  if ((bank.bankRequestedAt ?? 0) > bank.bankedAt && BANK_ANSWER_TOOLS.includes(toolName)) {
+    return false
+  }
+  return true
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   bankInstruction,
   capturePendingHandoff,
   handoffStamp,
+  markBankRequested,
   readJournalState,
   recordBankRequest,
   readTurns,
@@ -288,7 +289,12 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
 
   // Stamped before the request goes out, so a file appearing afterwards is
   // known to be this request's answer.
-  recordBankRequest(cwd, Date.now(), peakContext, input.session_id)
+  const requestedAt = Date.now()
+  recordBankRequest(cwd, requestedAt, peakContext, input.session_id)
+  // And stamped on the session's own marker, which is what lifts the wind-down
+  // guard for the write this request is about to ask for. Without it the guard
+  // refuses the Write named in the instruction below.
+  markBankRequested(input.session_id, requestedAt)
 
   return {
     decision: 'block',
