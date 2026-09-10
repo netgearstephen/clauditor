@@ -170,3 +170,39 @@ export function sweepTimerFiles(): void {
     }
   }
 }
+
+import { connect } from 'node:net'
+
+/**
+ * Hand a message to a live session's inbox.
+ *
+ * The auth frame goes first, on its own line. Without it a session running
+ * with permissions skipped cannot verify the sender as its own child, holds
+ * the message for an approval nobody is present to give, and lets it expire
+ * after five minutes. On macOS the process evidence counts only while the
+ * sender is still running, so this resolves after the write has flushed and
+ * the caller must stay alive until it does.
+ */
+export function sendToInbox(
+  socketPath: string,
+  token: string,
+  message: string
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(ok)
+    }
+    const socket = connect(socketPath)
+    socket.on('error', () => done(false))
+    socket.on('connect', () => {
+      socket.write(`${JSON.stringify({ type: 'auth', token })}\n`)
+      socket.write(`${JSON.stringify({ type: 'message', message })}\n`, () => {
+        socket.end()
+        done(true)
+      })
+    })
+  })
+}

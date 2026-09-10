@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { createServer } from 'node:net'
 import {
   shouldIdleBank,
   IDLE_BANK_DELAY_MS,
@@ -172,10 +173,10 @@ describe('the timer file', () => {
     const w = await importFresh(tempDir)
     const liveSocket = join(tempDir, 'live.sock')
     writeFileSync(liveSocket, '')
-    
+
     // Write a live timer for 'session-a' with a live process
     w.writeTimerFile(file({ sessionId: 'session-a', timerPid: process.pid, socketPath: liveSocket }) as never)
-    
+
     // Manually create a dead timer file with filename 'dead-file.json' but sessionId content pointing to 'session-a'
     const deadPath = w.timerFilePath('dead-file')!
     const corruptedContent = JSON.stringify({
@@ -190,12 +191,45 @@ describe('the timer file', () => {
       firesAt: 2_000,
     }, null, 2)
     writeFileSync(deadPath, corruptedContent, { mode: 0o600 })
-    
+
     w.sweepTimerFiles()
-    
+
     // The dead file should be deleted by its actual filename
     expect(existsSync(w.timerFilePath('dead-file')!)).toBe(false)
     // The live session's file should still exist, untouched
     expect(existsSync(w.timerFilePath('session-a')!)).toBe(true)
+  })
+})
+
+describe('sendToInbox', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-sock-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it('authenticates before it says anything else', async () => {
+    const w = await importFresh(tempDir)
+    const sockPath = join(tempDir, 'inbox.sock')
+    const lines: string[] = []
+    const server = createServer((c) => {
+      c.on('data', (b) => lines.push(...b.toString().split('\n').filter(Boolean)))
+    })
+    await new Promise<void>((r) => server.listen(sockPath, r))
+
+    const ok = await w.sendToInbox(sockPath, 'secret-token', 'bank please')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+
+    expect(ok).toBe(true)
+    expect(JSON.parse(lines[0])).toEqual({ type: 'auth', token: 'secret-token' })
+    expect(lines[1]).toContain('bank please')
+  })
+
+  it('reports failure rather than throwing when nothing is listening', async () => {
+    const w = await importFresh(tempDir)
+    await expect(w.sendToInbox(join(tempDir, 'absent.sock'), 't', 'hi')).resolves.toBe(false)
   })
 })
