@@ -32,6 +32,7 @@ export default defineConfig([
       'hooks/post-compact': 'src/hooks/post-compact.ts',
       'hooks/user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
       'hooks/session-start': 'src/hooks/session-start.ts',
+      'hooks/idle-timer': 'src/hooks/idle-timer.ts',
     },
     format: ['esm'],
     target: 'node20',

@@ -1,3 +1,7 @@
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync, readdirSync, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { resolve } from 'node:path'
+import { connect } from 'node:net'
 import { CACHE_TTL_MS } from './journal.js'
 import { RESUME_BREAK_EVEN } from './resume-advisory.js'
 
@@ -67,10 +71,6 @@ export function shouldIdleBank(facts: IdleBankFacts): IdleBankVerdict {
   }
   return { act: 'bank' }
 }
-
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync, readdirSync, existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
 
 /** One file per armed session. Never keyed by anything but the session id. */
 export const TIMERS_DIR = resolve(homedir(), '.clauditor', 'timers')
@@ -170,8 +170,6 @@ export function sweepTimerFiles(): void {
     }
   }
 }
-
-import { connect } from 'node:net'
 
 /**
  * Hand a message to a live session's inbox.
