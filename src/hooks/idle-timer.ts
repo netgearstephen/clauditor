@@ -136,13 +136,13 @@ export async function runIdleTimerOnce(
     await logActivity({
       type: 'context_warning',
       session,
-      // Handed over, not delivered: the send resolves when the kernel takes
-      // the bytes, not when the session acknowledges them, and this line is
-      // the only visibility into a message held for an approval nobody is
-      // present to give.
+      // Sent, not received: the send resolves when the kernel takes the
+      // bytes, not when the session acknowledges them. `requested` belongs to
+      // what recordBankRequest wrote, and this line is the only visibility
+      // into a message held for an approval nobody is present to give.
       message: sent
-        ? `idle bank handed to the session inbox, not yet acknowledged, at ${facts.peakContext} peak context`
-        : `idle bank could not be delivered at ${facts.peakContext} peak context`,
+        ? `idle bank sent at ${facts.peakContext} peak context`
+        : `idle bank could not be sent at ${facts.peakContext} peak context`,
     })
     deleteTimerFile(sessionId)
     return 'bank'

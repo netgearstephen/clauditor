@@ -230,23 +230,32 @@ export function socketStillOurs(file: Pick<IdleTimerFile, 'socketPath' | 'socket
 }
 
 /**
- * Does this pid's command line name our poller?
+ * Does this pid's command line name the poller for this session?
  *
  * A timer file can outlive the poller it names by up to 55 minutes, and pids
  * recycle in that time. `isProcessAlive` only answers "some process holds
  * this pid", so anything that signals a pid on that basis alone risks
  * SIGTERMing an unrelated process the OS has since handed the pid to.
  * SessionEnd is the caller that matters: it must confirm identity, not just
- * liveness, before it signals anything. Same shape as `resolveClaudePid`'s
- * use of `ps` below, since inventing a second way to read a process's
- * command would be needless.
+ * liveness, before it signals anything.
+ *
+ * The session id is required, not merely the poller's name: the poller takes
+ * it as its argv, and matching the name alone makes every poller on the
+ * machine look like this session's own. Ten sessions are typically open here,
+ * so that is not a theoretical mismatch, and the one thing worse than failing
+ * to stop your own timer is killing somebody else's. Same shape as
+ * `resolveClaudePid`'s use of `ps` below, since inventing a second way to
+ * read a process's command would be needless.
  */
-export function isOurPoller(pid: number): boolean {
+export function isOurPoller(pid: number, sessionId: string): boolean {
+  // An empty id would match every command line there is.
+  // An empty id would match every command line there is.
+  if (!sessionId) return false
   try {
     const command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
       encoding: 'utf-8',
     })
-    return command.includes('idle-timer')
+    return command.includes('idle-timer') && command.includes(sessionId)
   } catch {
     return false
   }

@@ -58,6 +58,10 @@ const CLAUDITOR_HOOKS: Record<string, HookEventConfig> = {
     matcher: '',
     hooks: [{ type: 'command', command: getHookCommand('stop') }],
   },
+  PreToolUse: {
+    matcher: '',
+    hooks: [{ type: 'command', command: getHookCommand('pre-tool-use') }],
+  },
   PostToolUse: {
     matcher: '',
     hooks: [{ type: 'command', command: getHookCommand('post-tool-use') }],

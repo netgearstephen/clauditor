@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createServer } from 'node:net'
+import { spawn } from 'node:child_process'
 import {
   shouldIdleBank,
   isProcessAlive,
@@ -473,5 +474,57 @@ describe('the timer file\'s permissions', () => {
     chmodSync(w.TIMERS_DIR, 0o755)
     w.writeTimerFile(file as never)
     expect(statSync(w.TIMERS_DIR).mode & 0o777).toBe(0o700)
+  })
+})
+
+describe('isOurPoller', () => {
+  let tempDir: string
+  let child: ReturnType<typeof spawn> | null
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-poller-id-'))
+    child = null
+  })
+  afterEach(() => {
+    child?.kill('SIGKILL')
+    rmSync(tempDir, { recursive: true, force: true })
+    vi.doUnmock('node:os')
+  })
+
+  /** A real process whose command line looks like a poller for `sessionId`. */
+  function poller(sessionId: string): number {
+    const entry = join(tempDir, 'idle-timer.js')
+    writeFileSync(entry, 'setTimeout(() => {}, 30_000)')
+    child = spawn(process.execPath, [entry, sessionId], { stdio: 'ignore' })
+    return child.pid!
+  }
+
+  it('recognises this session\'s own poller', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.isOurPoller(poller('sess-mine'), 'sess-mine')).toBe(true)
+  })
+
+  it('refuses another session\'s poller, which the name alone would accept', async () => {
+    // SessionEnd signals what this says yes to. Matching 'idle-timer' alone
+    // makes every poller on the machine look like this session's own, and the
+    // one thing worse than failing to stop your own timer is killing
+    // somebody else's.
+    const w = await importFresh(tempDir)
+    expect(w.isOurPoller(poller('sess-theirs'), 'sess-mine')).toBe(false)
+  })
+
+  it('refuses a process that is not a poller at all', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.isOurPoller(process.pid, 'sess-mine')).toBe(false)
+  })
+
+  it('refuses a pid that owns nothing', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.isOurPoller(4_194_304, 'sess-mine')).toBe(false)
+  })
+
+  it('refuses an empty session id, which would otherwise match anything', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.isOurPoller(poller('sess-mine'), '')).toBe(false)
   })
 })

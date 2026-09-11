@@ -42,11 +42,12 @@ describe('the SessionEnd hook', () => {
   it('kills the timer and removes its file when the session closes', async () => {
     const { hook, w } = await importFresh(tempDir)
     // A real child to kill, so the test proves the signal lands rather than
-    // asserting on a mock. 'idle-timer' on its command line is what the
-    // identity check requires before it will signal a pid at all.
+    // asserting on a mock. Its command line carries both halves of what the
+    // identity check requires before it will signal a pid at all: the
+    // poller's name and, as the real poller's argv does, the session id.
     const child = spawn(
       process.execPath,
-      ['-e', 'setTimeout(() => {}, 60000)', 'idle-timer-stub'],
+      ['-e', 'setTimeout(() => {}, 60000)', 'idle-timer-stub', 'closing'],
       { detached: true, stdio: 'ignore' }
     )
     child.unref()
@@ -75,6 +76,27 @@ describe('the SessionEnd hook', () => {
     await hook.handleSessionEndHook({ session_id: 'closing-2' } as never)
 
     expect(existsSync(w.timerFilePath('closing-2')!)).toBe(false)
+    expect(w.isProcessAlive(child.pid!)).toBe(true)
+    child.kill()
+  })
+
+  it('leaves another session\'s poller alone, however stale its own file is', async () => {
+    // Ten sessions are typically open on this machine, all of them running a
+    // poller whose command line names idle-timer. A recycled pid that has
+    // landed on one of those must not be signalled by this session's exit.
+    const { hook, w } = await importFresh(tempDir)
+    const child = spawn(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 60000)', 'idle-timer-stub', 'a-different-session'],
+      { detached: true, stdio: 'ignore' }
+    )
+    child.unref()
+    w.writeTimerFile(file({ sessionId: 'closing-3', timerPid: child.pid! }))
+
+    await hook.handleSessionEndHook({ session_id: 'closing-3' } as never)
+
+    expect(existsSync(w.timerFilePath('closing-3')!)).toBe(false)
+    await new Promise((r) => setTimeout(r, 100))
     expect(w.isProcessAlive(child.pid!)).toBe(true)
     child.kill()
   })

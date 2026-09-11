@@ -91,22 +91,16 @@ describe('the idle timer', () => {
     expect(received[1]).toContain('cheapest moment')
   })
 
-  it('logs a bank request handed over, claiming no more than the write proves', async () => {
+  it('logs a bank sent, claiming no more than the write proves', async () => {
     const { timer, server } = await arm()
     expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
     server.close()
     const activity = await import('../features/activity-log.js')
     const events = await activity.readActivity()
-    expect(
-      events.some(
-        (e) =>
-          e.message ===
-          'idle bank handed to the session inbox, not yet acknowledged, at 300000 peak context'
-      )
-    ).toBe(true)
+    expect(events.some((e) => e.message === 'idle bank sent at 300000 peak context')).toBe(true)
   })
 
-  it('logs an undelivered bank request, so a refused connection is still auditable', async () => {
+  it('logs a bank it could not send, so a refused connection is still auditable', async () => {
     // A plain file, not a socket, satisfies existsSync (so shouldIdleBank
     // still reaches 'bank') but refuses the connection sendToInbox attempts,
     // giving sent === false without ever touching the 'notify' path.
@@ -118,7 +112,7 @@ describe('the idle timer', () => {
     const activity = await import('../features/activity-log.js')
     const events = await activity.readActivity()
     expect(
-      events.some((e) => e.message === 'idle bank could not be delivered at 300000 peak context')
+      events.some((e) => e.message === 'idle bank could not be sent at 300000 peak context')
     ).toBe(true)
   })
 

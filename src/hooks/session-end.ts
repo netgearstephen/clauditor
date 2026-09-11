@@ -15,8 +15,9 @@ import {
  *
  * A pid alive under the timer file's name is not enough to signal: it may
  * have been recycled onto an unrelated process since the poller that held it
- * exited, so `isOurPoller` confirms identity before anything is killed. A
- * mismatch still gets the file removed; it just is not signalled.
+ * exited, or onto another session's poller, so `isOurPoller` confirms
+ * identity, name and session id both, before anything is killed. A mismatch
+ * still gets the file removed; it just is not signalled.
  */
 export async function handleSessionEndHook(
   input: { session_id?: string } | null
@@ -25,7 +26,7 @@ export async function handleSessionEndHook(
   if (!sessionId) return
   const file = readTimerFile(sessionId)
   if (!file) return
-  if (file.timerPid && isProcessAlive(file.timerPid) && isOurPoller(file.timerPid)) {
+  if (file.timerPid && isProcessAlive(file.timerPid) && isOurPoller(file.timerPid, sessionId)) {
     try {
       process.kill(file.timerPid)
     } catch {}
