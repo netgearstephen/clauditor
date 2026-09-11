@@ -24,6 +24,39 @@ import { isHookEntry } from './shared.js'
 /** How often the poller looks at its own file. A stat a minute, no more. */
 const POLL_INTERVAL_MS = 60_000
 
+/** How long a freshly spawned poller waits to see its own pid land. */
+const STARTUP_GRACE_MS = 2_000
+
+/** How often it checks, while waiting on that startup grace. */
+const STARTUP_POLL_MS = 50
+
+/**
+ * Wait for this process's own arming to land, once, at startup.
+ *
+ * The parent spawns this process before it knows this pid, so it writes the
+ * timer file naming it only afterwards. A poller that reads first sees either
+ * no file or the previous arming's pid and, without this, would exit at once:
+ * the case that loses that race is a session whose last-ever Stop was the one
+ * that raced, which is exactly the case the watchdog exists for.
+ *
+ * This grace applies only here, before the first successful
+ * self-identification. Once that has happened, main's own per-loop read is
+ * what governs: a later mismatch there (a respawn superseding this poller)
+ * still exits immediately, with no second grace.
+ */
+export async function awaitOwnArming(
+  sessionId: string,
+  timeoutMs: number = STARTUP_GRACE_MS
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const file = readTimerFile(sessionId)
+    if (file?.timerPid === process.pid) return true
+    if (Date.now() >= deadline) return false
+    await new Promise((r) => setTimeout(r, STARTUP_POLL_MS))
+  }
+}
+
 /**
  * Re-derive every fact from disk.
  *
@@ -122,6 +155,7 @@ export async function runIdleTimerOnce(
 async function main(): Promise<void> {
   const sessionId = process.argv[2]
   if (!sessionId) return
+  if (!(await awaitOwnArming(sessionId))) return
   for (;;) {
     // Checked here, not inside runIdleTimerOnce: the tests call that
     // directly under their own pid, and it must still act. A poller left

@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { dirname, resolve as resolvePath } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type {
   StopHookInput,
   HookDecision,
@@ -23,6 +26,14 @@ import {
   peakContextTokens,
   writeJournal,
 } from '../features/journal.js'
+import {
+  IDLE_BANK_DELAY_MS,
+  isProcessAlive,
+  readTimerFile,
+  resolveClaudePid,
+  sweepTimerFiles,
+  writeTimerFile,
+} from '../features/idle-watchdog.js'
 import { readStdin, outputDecision, isHookEntry } from './shared.js'
 
 /**
@@ -51,6 +62,11 @@ export async function handleStopHook(): Promise<void> {
   // asked for arrives on a re-entrant Stop, so capturing below the guard makes
   // the request every time and stores the answer never. A write, not a block.
   captureBankedHandoff(hookInput)
+
+  // Armed here, not at the end: several paths below return early, including
+  // the very next guard, on a re-entrant Stop. Arming placed after them would
+  // never run on the one invocation shape a re-entrant loop always uses.
+  armIdleTimer(hookInput)
 
   // If stop_hook_active is true, another stop hook is already running.
   // Do not block again to prevent infinite loops.
@@ -355,6 +371,58 @@ function captureBankedHandoff(input: StopHookInput): void {
       message: `banked handoff judgement from the reply (${msg.length} chars)`,
     }).catch(() => {})
   }
+}
+
+/**
+ * Push this session's idle timer out to 55 minutes from now.
+ *
+ * Cheap on every turn but the first: an existing, live poller is left running
+ * and only `firesAt` is rewritten. Killing and respawning a node process per
+ * turn would hold roughly 420MB across the sessions typically open here (42MB
+ * a poller against 1.2MB for a shell sleeper, times the nine or ten sessions
+ * typically open), and pay a spawn and a kill for nothing.
+ */
+function armIdleTimer(input: StopHookInput): void {
+  // Anything left behind by a session that was killed goes now: no signal is
+  // guaranteed to arrive, so every stop in every session sweeps.
+  sweepTimerFiles()
+
+  const claude = resolveClaudePid()
+  if (!claude) return
+  const token = process.env.CLAUDE_CODE_MESSAGING_TOKEN
+  if (!token || !input.transcript_path) return
+
+  const now = Date.now()
+  const existing = readTimerFile(input.session_id)
+  const alive = existing !== null && isProcessAlive(existing.timerPid)
+
+  const file = {
+    sessionId: input.session_id,
+    timerPid: alive ? existing!.timerPid : 0,
+    claudePid: claude.pid,
+    socketPath: claude.socketPath,
+    token,
+    cwd: extractCwd(input.transcript_path) ?? process.cwd(),
+    transcriptPath: input.transcript_path,
+    armedAt: now,
+    firesAt: now + IDLE_BANK_DELAY_MS,
+  }
+
+  if (alive) {
+    writeTimerFile(file)
+    return
+  }
+
+  // The build is ESM, so there is no __dirname to lean on. The poller sits
+  // beside this hook in dist/hooks.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const child = spawn(
+    process.execPath,
+    [resolvePath(here, 'idle-timer.js'), input.session_id],
+    { detached: true, stdio: 'ignore' }
+  )
+  child.unref()
+  writeTimerFile({ ...file, timerPid: child.pid ?? 0 })
 }
 
 // Run only when this module is the entry point: see isHookEntry.

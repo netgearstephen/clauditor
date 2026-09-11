@@ -58,7 +58,11 @@ describe('hook stdout, end to end', () => {
       {
         input: payload,
         encoding: 'utf-8',
-        env: { ...process.env, HOME: home },
+        // Stop would otherwise walk its real parent chain to the actual
+        // /tmp/cc-socks this suite runs under, find a genuine ancestor (the
+        // session running these tests), and spawn a real detached poller
+        // this test never cleans up.
+        env: { ...process.env, HOME: home, CLAUDITOR_SOCK_DIR: join(home, 'no-cc-socks') },
         timeout: 30_000,
       }
     )

@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync, readdirSync, existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { connect } from 'node:net'
@@ -70,6 +71,38 @@ export function shouldIdleBank(facts: IdleBankFacts): IdleBankVerdict {
     return { act: 'notify', reason: 'cache-cold' }
   }
   return { act: 'bank' }
+}
+
+/** Where Claude Code puts one inbox socket per live session process. */
+export const SOCK_DIR = process.env.CLAUDITOR_SOCK_DIR ?? '/tmp/cc-socks'
+
+/**
+ * Find the `claude` process this hook is running under.
+ *
+ * Sockets are keyed by PID, never by session id, so this mapping can only be
+ * made while the session is alive, which is why arming captures it rather
+ * than the timer resolving it later. A hook process reaches its own claude in
+ * three hops up the parent chain, verified live; the cap is generous against
+ * that.
+ */
+export function resolveClaudePid(
+  startPid: number = process.pid,
+  sockDir: string = SOCK_DIR
+): { pid: number; socketPath: string } | null {
+  let pid = startPid
+  for (let hop = 0; hop < 8 && pid > 1; hop++) {
+    const socketPath = resolve(sockDir, `${pid}.sock`)
+    if (existsSync(socketPath)) return { pid, socketPath }
+    try {
+      pid = Number(
+        execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf-8' }).trim()
+      )
+    } catch {
+      return null
+    }
+    if (!Number.isFinite(pid)) return null
+  }
+  return null
 }
 
 /** One file per armed session. Never keyed by anything but the session id. */

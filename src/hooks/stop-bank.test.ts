@@ -41,7 +41,13 @@ describe('Stop hook banking, end to end', () => {
     return execFileSync('node', [HOOK], {
       input: JSON.stringify(input),
       encoding: 'utf-8',
-      env: { ...process.env, HOME: home },
+      // Pointed at a directory that never has anything in it: these tests
+      // are not about arming, and the real /tmp/cc-socks this suite runs
+      // under is not empty (it holds the very Claude session running these
+      // tests), so leaving the default would have every one of them walk up
+      // to a genuine ancestor and spawn a real, detached poller nothing here
+      // ever cleans up.
+      env: { ...process.env, HOME: home, CLAUDITOR_SOCK_DIR: join(home, 'no-cc-socks') },
       timeout: 30_000,
     })
   }
@@ -386,4 +392,75 @@ describe('Stop hook banking, end to end', () => {
     })
     expect(existsSync(pendingPath())).toBe(false)
   })
+})
+
+describe('Idle timer arming, end to end', () => {
+  let home: string
+  let transcript: string
+  // The poller this test's own run spawns, if any: it sleeps for up to a
+  // minute between wakes, so removing its timer file does not stop it. It
+  // must be killed here, not left to the module-wide sweep.
+  let armedPid: number | null
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'clauditor-bank-e2e-arm-'))
+    transcript = join(home, 'arm.jsonl')
+    writeFileSync(
+      transcript,
+      JSON.stringify({ type: 'user', cwd: CWD, timestamp: new Date().toISOString() })
+    )
+    armedPid = null
+  })
+
+  afterEach(() => {
+    if (armedPid) {
+      try {
+        process.kill(armedPid, 'SIGKILL')
+      } catch {
+        // Already dead is fine; that is the common case.
+      }
+    }
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  function runHook(input: Record<string, unknown>): string {
+    return execFileSync('node', [HOOK], {
+      input: JSON.stringify(input),
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        HOME: home,
+        CLAUDITOR_SOCK_DIR: join(home, 'cc-socks'),
+        CLAUDE_CODE_MESSAGING_TOKEN: 'e2e-token',
+      },
+      timeout: 30_000,
+    })
+  }
+
+  it('arms one idle timer per session, and pushes it out on the next stop', () => {
+    const sockDir = join(home, 'cc-socks')
+    mkdirSync(sockDir, { recursive: true })
+    // Stand in for the session's own socket: the hook walks its parent chain,
+    // and the test runner is an ancestor of the hook process.
+    writeFileSync(join(sockDir, `${process.pid}.sock`), '')
+
+    const input = {
+      session_id: 'e2e-armed',
+      transcript_path: transcript,
+      stop_hook_active: true,
+      hook_event_name: 'Stop',
+    }
+    const timerPath = join(home, '.clauditor', 'timers', 'e2e-armed.json')
+
+    runHook(input)
+    const first = JSON.parse(readFileSync(timerPath, 'utf-8'))
+    armedPid = first.timerPid
+    expect(first.firesAt - first.armedAt).toBe(55 * 60 * 1000)
+
+    runHook(input)
+    const second = JSON.parse(readFileSync(timerPath, 'utf-8'))
+    // Pushed out, and the same poller is still the one watching it.
+    expect(second.firesAt).toBeGreaterThanOrEqual(first.firesAt)
+    expect(second.timerPid).toBe(first.timerPid)
+  }, 30_000)
 })

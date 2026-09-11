@@ -180,3 +180,63 @@ describe('the idle timer', () => {
     expect(events.some((e) => e.message.includes('cache-cold'))).toBe(true)
   })
 })
+
+describe('awaitOwnArming', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-idle-startup-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    vi.doUnmock('node:os')
+  })
+
+  // Closes the spawn/write race described in the plan: the parent writes the
+  // timer file (naming this process's pid) only after spawning it, so the
+  // poller's very first read can land before that write does. This is the
+  // wait that stands in for that gap.
+  it('returns true once the timer file comes to name this pid', async () => {
+    const { timer, w } = await importFresh(tempDir)
+    setTimeout(() => {
+      w.writeTimerFile({
+        sessionId: 'startup-1',
+        timerPid: process.pid,
+        claudePid: process.pid,
+        socketPath: join(tempDir, 'inbox.sock'),
+        token: 'tok',
+        cwd: CWD,
+        transcriptPath: transcript(tempDir, 0, 1_000),
+        armedAt: Date.now(),
+        firesAt: Date.now() + 1_000,
+      } as never)
+    }, 100)
+
+    expect(await timer.awaitOwnArming('startup-1', 2_000)).toBe(true)
+  })
+
+  it('gives up once the grace has elapsed and the file still does not name it', async () => {
+    const { timer } = await importFresh(tempDir)
+    expect(await timer.awaitOwnArming('nobody-waiting', 200)).toBe(false)
+  })
+
+  it('does not wait past the grace once a later mismatch shows up', async () => {
+    // Not this function's job once the poller is past startup: main's own
+    // per-loop check (unchanged) is what exits on a later supersession. This
+    // only pins that awaitOwnArming itself does not grant a second grace.
+    const { timer, w } = await importFresh(tempDir)
+    w.writeTimerFile({
+      sessionId: 'startup-2',
+      timerPid: process.pid + 1,
+      claudePid: process.pid,
+      socketPath: join(tempDir, 'inbox.sock'),
+      token: 'tok',
+      cwd: CWD,
+      transcriptPath: transcript(tempDir, 0, 1_000),
+      armedAt: Date.now(),
+      firesAt: Date.now() + 1_000,
+    } as never)
+    const start = Date.now()
+    expect(await timer.awaitOwnArming('startup-2', 300)).toBe(false)
+    expect(Date.now() - start).toBeGreaterThanOrEqual(300)
+  })
+})

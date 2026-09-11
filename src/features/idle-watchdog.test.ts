@@ -202,6 +202,32 @@ describe('the timer file', () => {
   })
 })
 
+describe('resolveClaudePid', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-sock-resolve-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    vi.doUnmock('node:os')
+  })
+
+  it('finds the ancestor whose socket exists', async () => {
+    const w = await importFresh(tempDir)
+    const sockDir = join(tempDir, 'cc-socks')
+    mkdirSync(sockDir, { recursive: true })
+    writeFileSync(join(sockDir, `${process.ppid}.sock`), '')
+    const found = w.resolveClaudePid(process.pid, sockDir)
+    expect(found?.pid).toBe(process.ppid)
+    expect(found?.socketPath).toBe(join(sockDir, `${process.ppid}.sock`))
+  })
+
+  it('returns null when no ancestor is listening', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.resolveClaudePid(process.pid, join(tempDir, 'empty'))).toBeNull()
+  })
+})
+
 describe('sendToInbox', () => {
   let tempDir: string
   beforeEach(() => {
