@@ -91,6 +91,31 @@ describe('the idle timer', () => {
     expect(received[1]).toContain('cheapest moment')
   })
 
+  it('logs a delivered bank request, so a successful send is auditable', async () => {
+    const { timer, server } = await arm()
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    server.close()
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message === 'idle bank requested at 300000 peak context')).toBe(true)
+  })
+
+  it('logs an undelivered bank request, so a refused connection is still auditable', async () => {
+    // A plain file, not a socket, satisfies existsSync (so shouldIdleBank
+    // still reaches 'bank') but refuses the connection sendToInbox attempts,
+    // giving sent === false without ever touching the 'notify' path.
+    const fakeSocket = join(tempDir, 'fake.sock')
+    writeFileSync(fakeSocket, '')
+    const { timer, server } = await arm({ socketPath: fakeSocket })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    server.close()
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(
+      events.some((e) => e.message === 'idle bank could not be delivered at 300000 peak context')
+    ).toBe(true)
+  })
+
   it('records the request, so an unanswered one does not re-fire at every stop', async () => {
     const { timer, w, server } = await arm()
     await timer.runIdleTimerOnce('idle-1')
