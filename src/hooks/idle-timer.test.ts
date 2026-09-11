@@ -91,13 +91,19 @@ describe('the idle timer', () => {
     expect(received[1]).toContain('cheapest moment')
   })
 
-  it('logs a delivered bank request, so a successful send is auditable', async () => {
+  it('logs a bank request handed over, claiming no more than the write proves', async () => {
     const { timer, server } = await arm()
     expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
     server.close()
     const activity = await import('../features/activity-log.js')
     const events = await activity.readActivity()
-    expect(events.some((e) => e.message === 'idle bank requested at 300000 peak context')).toBe(true)
+    expect(
+      events.some(
+        (e) =>
+          e.message ===
+          'idle bank handed to the session inbox, not yet acknowledged, at 300000 peak context'
+      )
+    ).toBe(true)
   })
 
   it('logs an undelivered bank request, so a refused connection is still auditable', async () => {
@@ -130,6 +136,59 @@ describe('the idle timer', () => {
     server.close()
     const j = await import('../features/journal.js')
     expect(j.takeUnattendedBank(CWD, 'idle-1')).toBe(true)
+  })
+
+  it('stamps the request on the session marker, so a woken re-bank can answer it', async () => {
+    // The Stop hook writes recordBankRequest and markBankRequested together.
+    // The second is what stands the wind-down guard aside for the Write the
+    // bank instruction asks for, so a woken re-bank without it is told to
+    // write a handoff and then refused the tool to write it with.
+    const { timer, server } = await arm()
+    const j = await import('../features/journal.js')
+    j.markSessionBanked('idle-1', CWD, Date.now() - 60_000, {
+      peakContext: 100_000,
+      handoffPath: join(tempDir, 'handoff.md'),
+    })
+    expect(j.isBlockedAfterBank('idle-1', 'Write')).toBe(true)
+
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    server.close()
+    expect(j.isBlockedAfterBank('idle-1', 'Write')).toBe(false)
+  })
+
+  it('writes its stamps where the session is now, not where it was armed', async () => {
+    // The arm-time cwd is up to 55 minutes old, while the Stop hook that
+    // handles the request reads the flag under its own current cwd. A session
+    // that changed directory in between writes the flag in one place and
+    // looks for it in another, and comes back to a guard it never armed.
+    const { timer, server } = await arm({ cwd: '/home/user/where-it-was-armed' })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    server.close()
+
+    const j = await import('../features/journal.js')
+    expect(j.readJournalState(CWD).bankRequestedSession).toBe('idle-1')
+    expect(j.takeUnattendedBank(CWD, 'idle-1')).toBe(true)
+    expect(j.takeUnattendedBank('/home/user/where-it-was-armed', 'idle-1')).toBe(false)
+  })
+
+  it('says nothing to a socket path that now belongs to another session', async () => {
+    // Sockets are keyed by pid. If the original claude exited and a new one
+    // took that pid, the path still exists and the wake would be delivered to
+    // a stranger's session.
+    const { timer, w, server, received } = await arm({ socketInode: 999_999_999 })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('nothing')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+    expect(received).toEqual([])
+    expect(existsSync(w.timerFilePath('idle-1')!)).toBe(false)
+  })
+
+  it('still acts on a timer file written before the inode was recorded', async () => {
+    // Every file already on disk has no inode field. Reading absence as a
+    // mismatch would strand all of them.
+    const { timer, server } = await arm()
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    server.close()
   })
 
   it('does not send anything to a session that has taken a turn since arming', async () => {

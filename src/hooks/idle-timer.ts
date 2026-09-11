@@ -1,9 +1,10 @@
-import { existsSync } from 'node:fs'
 import { readConfig } from '../config.js'
 import { logActivity } from '../features/activity-log.js'
 import {
   bankInstruction,
+  cwdFromTranscript,
   handoffStamp,
+  markBankRequested,
   markUnattendedBank,
   msSinceLastTurn,
   peakContextTokens,
@@ -16,6 +17,7 @@ import {
   readTimerFile,
   sendToInbox,
   shouldIdleBank,
+  socketStillOurs,
   type IdleBankFacts,
   type IdleTimerFile,
 } from '../features/idle-watchdog.js'
@@ -76,7 +78,7 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
     growthSinceBank: bank ? peakContext - bank.peakContext : 0,
     rotationEnabled: config.rotation.enabled,
     reBankGrowth: config.rotation.reBankGrowth,
-    socketExists: existsSync(file.socketPath),
+    socketExists: socketStillOurs(file),
   }
 }
 
@@ -93,7 +95,10 @@ export async function runIdleTimerOnce(
 ): Promise<'bank' | 'notify' | 'nothing' | 'waiting'> {
   const file = readTimerFile(sessionId)
   if (!file) return 'nothing'
-  if (!existsSync(file.socketPath)) {
+  // Not merely "is something listening there": sockets are keyed by pid, and
+  // if the session exited and a new claude took its pid, the wake would be
+  // delivered to a stranger.
+  if (!socketStillOurs(file)) {
     deleteTimerFile(sessionId)
     return 'nothing'
   }
@@ -104,12 +109,19 @@ export async function runIdleTimerOnce(
   const session = sessionId.slice(0, 8)
 
   if (verdict.act === 'bank') {
-    // Written down before the message goes out, exactly as the Stop hook does
-    // it: an unanswered request that was never recorded fires again at every
-    // stop for the rest of the session.
-    recordBankRequest(file.cwd, now, facts.peakContext, sessionId)
+    // Where the session is now, not where it was when the timer was armed up
+    // to 55 minutes ago: the Stop hook that handles the request reads these
+    // stamps under its own current directory, and a session that has changed
+    // directory since would look in a place nothing was written.
+    const cwd = cwdFromTranscript(file.transcriptPath) ?? file.cwd
+    // Both stamps, and before the message goes out, exactly as the Stop hook
+    // does it. A request that was never recorded fires again at every stop
+    // for the rest of the session, and the second stamp is what stands the
+    // wind-down guard aside for the Write this instruction asks for.
+    recordBankRequest(cwd, now, facts.peakContext, sessionId)
+    markBankRequested(sessionId, now)
     // The woken session must not come back to a guard it never armed.
-    markUnattendedBank(file.cwd, sessionId)
+    markUnattendedBank(cwd, sessionId)
     const sent = await sendToInbox(
       file.socketPath,
       file.token,
@@ -124,8 +136,12 @@ export async function runIdleTimerOnce(
     await logActivity({
       type: 'context_warning',
       session,
+      // Handed over, not delivered: the send resolves when the kernel takes
+      // the bytes, not when the session acknowledges them, and this line is
+      // the only visibility into a message held for an approval nobody is
+      // present to give.
       message: sent
-        ? `idle bank requested at ${facts.peakContext} peak context`
+        ? `idle bank handed to the session inbox, not yet acknowledged, at ${facts.peakContext} peak context`
         : `idle bank could not be delivered at ${facts.peakContext} peak context`,
     })
     deleteTimerFile(sessionId)
@@ -152,7 +168,7 @@ export async function runIdleTimerOnce(
 }
 
 /** Poll until this session's timer has fired, been superseded or gone away. */
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const sessionId = process.argv[2]
   if (!sessionId) return
   if (!(await awaitOwnArming(sessionId))) return

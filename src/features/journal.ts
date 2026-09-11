@@ -452,6 +452,31 @@ export function allowWorkAfterBank(sessionId: string | null): void {
   } catch {}
 }
 
+/**
+ * The directory the session was last in, from the last user record.
+ *
+ * Read from the transcript rather than passed around because it changes
+ * mid-session, and everything keyed by directory (the journal, the state
+ * file, the unattended-bank flag) has to agree on which one is current. The
+ * idle watchdog in particular holds a cwd captured up to 55 minutes earlier,
+ * which is no longer an answer to this question.
+ */
+export function cwdFromTranscript(transcriptPath: string): string | null {
+  let content: string
+  try {
+    content = readFileSync(transcriptPath, 'utf-8')
+  } catch {
+    return null
+  }
+  const lines = content.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const r = JSON.parse(lines[i])
+      if (r.type === 'user' && r.cwd) return r.cwd as string
+    } catch {}
+  }
+  return null
+}
 
 // --- Cache warmth ---
 

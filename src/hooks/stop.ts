@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
-import { dirname, resolve as resolvePath } from 'node:path'
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type {
   StopHookInput,
@@ -16,6 +15,7 @@ import {
   adoptBankedHandoff,
   bankInstruction,
   capturePendingHandoff,
+  cwdFromTranscript,
   handoffStamp,
   markBankRequested,
   readJournalState,
@@ -31,6 +31,9 @@ import {
   isProcessAlive,
   readTimerFile,
   resolveClaudePid,
+  resolvePollerEntry,
+  socketInode,
+  spawnPoller,
   sweepTimerFiles,
   writeTimerFile,
 } from '../features/idle-watchdog.js'
@@ -172,7 +175,7 @@ export function analyzeForLoop(input: StopHookInput): HookDecision {
 async function reportKnowledgeOutcomes(input: StopHookInput): Promise<void> {
   if (input.stop_hook_active) return
 
-  const cwd = extractCwd(input.transcript_path)
+  const cwd = cwdFromTranscript(input.transcript_path)
   if (!cwd) return
 
   try {
@@ -196,7 +199,7 @@ async function reportKnowledgeOutcomes(input: StopHookInput): Promise<void> {
  * descriptions + categories. Fire-and-forget.
  */
 async function pushSubagentSignals(input: StopHookInput): Promise<void> {
-  const cwd = extractCwd(input.transcript_path)
+  const cwd = cwdFromTranscript(input.transcript_path)
   if (!cwd) return
 
   try {
@@ -232,21 +235,6 @@ async function pushSubagentSignals(input: StopHookInput): Promise<void> {
   }
 }
 
-/** Extract cwd from the last user record in the transcript. */
-function extractCwd(transcriptPath: string): string | null {
-  try {
-    const content = readFileSync(transcriptPath, 'utf-8')
-    const lines = content.split('\n')
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const r = JSON.parse(lines[i])
-        if (r.type === 'user' && r.cwd) return r.cwd
-      } catch {}
-    }
-  } catch {}
-  return null
-}
-
 function hashValue(value: unknown): string {
   const str = typeof value === 'string' ? value : JSON.stringify(value ?? '')
   return createHash('sha256').update(str).digest('hex').slice(0, 16)
@@ -269,7 +257,7 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
   const config = readConfig()
   if (!config.rotation.enabled) return null
 
-  const cwd = extractCwd(input.transcript_path)
+  const cwd = cwdFromTranscript(input.transcript_path)
   const { turns } = readTurns(input.transcript_path)
 
   // The mechanical half. A script over git and the transcript, no model, so
@@ -337,7 +325,7 @@ function captureBankedHandoff(input: StopHookInput): void {
   if (!msg || !msg.includes(BANK_MARKER)) return
   if (!input.transcript_path) return
 
-  const cwd = extractCwd(input.transcript_path)
+  const cwd = cwdFromTranscript(input.transcript_path)
   const { turns } = readTurns(input.transcript_path)
 
   // Preferred: the model wrote the document itself and replied with only the
@@ -401,8 +389,9 @@ function armIdleTimer(input: StopHookInput): void {
     timerPid: alive ? existing!.timerPid : 0,
     claudePid: claude.pid,
     socketPath: claude.socketPath,
+    socketInode: socketInode(claude.socketPath),
     token,
-    cwd: extractCwd(input.transcript_path) ?? process.cwd(),
+    cwd: cwdFromTranscript(input.transcript_path) ?? process.cwd(),
     transcriptPath: input.transcript_path,
     armedAt: now,
     firesAt: now + IDLE_BANK_DELAY_MS,
@@ -413,16 +402,18 @@ function armIdleTimer(input: StopHookInput): void {
     return
   }
 
-  // The build is ESM, so there is no __dirname to lean on. The poller sits
-  // beside this hook in dist/hooks.
-  const here = dirname(fileURLToPath(import.meta.url))
-  const child = spawn(
-    process.execPath,
-    [resolvePath(here, 'idle-timer.js'), input.session_id],
-    { detached: true, stdio: 'ignore' }
-  )
-  child.unref()
-  writeTimerFile({ ...file, timerPid: child.pid ?? 0 })
+  // The spawn is gated, and only the spawn: a 42MB process asleep for 55
+  // minutes to decide 'nothing' is worth nobody's memory, but the sweep above
+  // has to keep running or turning rotation off would strand every timer file
+  // already on disk.
+  if (!readConfig().rotation.enabled) return
+
+  // The build is ESM, so there is no __dirname to lean on, and the layout
+  // below `here` depends on which entry point is running: see
+  // resolvePollerEntry. Nothing is written when there is no poller to name.
+  const entry = resolvePollerEntry(dirname(fileURLToPath(import.meta.url)))
+  if (!entry) return
+  writeTimerFile({ ...file, timerPid: spawnPoller(entry, input.session_id) })
 }
 
 // Run only when this module is the entry point: see isHookEntry.

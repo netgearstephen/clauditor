@@ -24,7 +24,10 @@ function encodeCwd(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').slice(0, 100)
 }
 
-describe('Stop hook banking, end to end', () => {
+// Every test here runs the built hook in a subprocess, at roughly 1.7s an
+// invocation, so the 5s default is a load-sensitive coin toss rather than a
+// timeout. Set once for the describe; the per-test values below predate it.
+describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
   let home: string
   let transcript: string
 
@@ -463,4 +466,152 @@ describe('Idle timer arming, end to end', () => {
     expect(second.firesAt).toBeGreaterThanOrEqual(first.firesAt)
     expect(second.timerPid).toBe(first.timerPid)
   }, 30_000)
+
+  it('respawns a poller for a timer file wedged at pid zero', () => {
+    // process.kill(0, 0) signals the process group and succeeds, so a timer
+    // file carrying timerPid 0 reads as alive: the Stop hook rewrites firesAt
+    // and never respawns, and the sweep will not reap it either. The session
+    // is unwatched for ever, with a file on disk carrying a live auth token.
+    const sockDir = join(home, 'cc-socks')
+    mkdirSync(sockDir, { recursive: true })
+    const sock = join(sockDir, `${process.pid}.sock`)
+    writeFileSync(sock, '')
+    const timerPath = join(home, '.clauditor', 'timers', 'e2e-wedged.json')
+    mkdirSync(dirname(timerPath), { recursive: true })
+    writeFileSync(
+      timerPath,
+      JSON.stringify({
+        sessionId: 'e2e-wedged',
+        timerPid: 0,
+        claudePid: process.pid,
+        socketPath: sock,
+        token: 'stale-token',
+        cwd: CWD,
+        transcriptPath: transcript,
+        armedAt: Date.now() - 1_000,
+        firesAt: Date.now() + 60_000,
+      })
+    )
+
+    runHook({
+      session_id: 'e2e-wedged',
+      transcript_path: transcript,
+      stop_hook_active: true,
+      hook_event_name: 'Stop',
+    })
+
+    const file = JSON.parse(readFileSync(timerPath, 'utf-8'))
+    armedPid = file.timerPid
+    expect(file.timerPid).toBeGreaterThan(0)
+  }, 30_000)
+
+  it('arms nothing at all when rotation is switched off', () => {
+    // A detached 42MB node process per session, asleep for 55 minutes, to
+    // decide 'nothing' on waking. The sweep still has to run, which is why
+    // only the spawn is gated, but nothing may be left on disk either: a
+    // timer file naming no poller is the wedge item 2 is about.
+    mkdirSync(join(home, '.clauditor'), { recursive: true })
+    writeFileSync(
+      join(home, '.clauditor', 'config.json'),
+      JSON.stringify({ rotation: { enabled: false } })
+    )
+    const sockDir = join(home, 'cc-socks')
+    mkdirSync(sockDir, { recursive: true })
+    writeFileSync(join(sockDir, `${process.pid}.sock`), '')
+
+    runHook({
+      session_id: 'e2e-rotation-off',
+      transcript_path: transcript,
+      stop_hook_active: true,
+      hook_event_name: 'Stop',
+    })
+
+    expect(existsSync(join(home, '.clauditor', 'timers', 'e2e-rotation-off.json'))).toBe(false)
+  }, 30_000)
 })
+
+/**
+ * The same arming assertion again, through the entry point production uses.
+ *
+ * `install.ts` writes `clauditor hook stop`, whose bin is `dist/cli.js`, and
+ * tsup inlines the Stop hook into that bundle. So `import.meta.url` there is
+ * `dist/cli.js`, not `dist/hooks/stop.js`, and a poller path resolved relative
+ * to it lands one directory too high. Every installed poller died on boot with
+ * `Cannot find module` and no test noticed, because every test drove
+ * `dist/hooks/stop.js`, where the same relative path happens to resolve.
+ *
+ * Hence the two things this asserts that the other arming test cannot: the
+ * installed entry point, and a poller that is actually alive rather than a
+ * file naming a pid.
+ */
+describe('Idle timer arming through the installed entry point', () => {
+  const CLI = resolve(__dirname, '..', '..', 'dist', 'cli.js')
+  let home: string
+  let transcript: string
+  let armedPid: number | null
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'clauditor-bank-e2e-cli-'))
+    transcript = join(home, 'arm.jsonl')
+    writeFileSync(
+      transcript,
+      JSON.stringify({ type: 'user', cwd: CWD, timestamp: new Date().toISOString() })
+    )
+    armedPid = null
+  })
+
+  afterEach(() => {
+    if (armedPid) {
+      try {
+        process.kill(armedPid, 'SIGKILL')
+      } catch {
+        // Already dead is fine, and is what this test fails on.
+      }
+    }
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it('spawns a poller that is still alive after the hook returns', () => {
+    const sockDir = join(home, 'cc-socks')
+    mkdirSync(sockDir, { recursive: true })
+    writeFileSync(join(sockDir, `${process.pid}.sock`), '')
+
+    execFileSync('node', [CLI, 'hook', 'stop'], {
+      input: JSON.stringify({
+        session_id: 'e2e-cli-armed',
+        transcript_path: transcript,
+        stop_hook_active: true,
+        hook_event_name: 'Stop',
+      }),
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        HOME: home,
+        CLAUDITOR_SOCK_DIR: sockDir,
+        CLAUDE_CODE_MESSAGING_TOKEN: 'e2e-cli-token',
+      },
+      timeout: 30_000,
+    })
+
+    const timerPath = join(home, '.clauditor', 'timers', 'e2e-cli-armed.json')
+    const file = JSON.parse(readFileSync(timerPath, 'utf-8'))
+    armedPid = file.timerPid
+    expect(file.timerPid).toBeGreaterThan(0)
+
+    // The poller has to get through awaitOwnArming and into its poll loop, so
+    // liveness is checked after a pause rather than at once: a poller that
+    // dies on boot takes a few tens of milliseconds to do it.
+    execFileSync('sleep', ['1'])
+    expect(isAlive(file.timerPid)).toBe(true)
+  }, 30_000)
+})
+
+/** Does this pid still exist? Signal 0 delivers nothing. */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}

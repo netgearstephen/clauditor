@@ -1,5 +1,14 @@
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync, readdirSync, existsSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import {
+  writeFileSync,
+  readFileSync,
+  unlinkSync,
+  mkdirSync,
+  readdirSync,
+  existsSync,
+  chmodSync,
+  statSync,
+} from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { connect } from 'node:net'
@@ -122,6 +131,16 @@ export interface IdleTimerFile {
   timerPid: number
   claudePid: number
   socketPath: string
+  /**
+   * The socket's inode at arm time, when it is known.
+   *
+   * Sockets are keyed by pid, and this path is up to 55 minutes old by the
+   * time the poller reads it: if the original `claude` exited and a new one
+   * took that pid, the path exists but belongs to a stranger's session.
+   * Optional, because every file written before this shipped lacks it, and
+   * absence has to mean "no check available" rather than "mismatch".
+   */
+  socketInode?: number
   token: string
   cwd: string
   transcriptPath: string
@@ -139,8 +158,12 @@ export function writeTimerFile(file: IdleTimerFile): void {
   const path = timerFilePath(file.sessionId)
   if (!path) return
   try {
-    mkdirSync(TIMERS_DIR, { recursive: true })
+    mkdirSync(TIMERS_DIR, { mode: 0o700, recursive: true })
     writeFileSync(path, JSON.stringify(file, null, 2), { mode: 0o600 })
+    // writeFileSync's mode applies at creation only, so a file that was
+    // already there keeps whatever permissions it had. This one carries a
+    // live auth token for the best part of an hour.
+    chmodSync(path, 0o600)
   } catch {}
 }
 
@@ -162,14 +185,45 @@ export function deleteTimerFile(sessionId: string): void {
   } catch {}
 }
 
-/** Is this pid still running? Signal 0 tests without delivering anything. */
+/**
+ * Is this pid still running? Signal 0 tests without delivering anything.
+ *
+ * Zero is refused before it reaches the kernel: `process.kill(0, 0)` signals
+ * the caller's own process group and succeeds, so a timer file carrying the
+ * zero that a failed spawn writes would read as alive, never be respawned and
+ * never be swept, leaving the session unwatched for ever. Negative pids name
+ * process groups for the same reason.
+ */
 export function isProcessAlive(pid: number): boolean {
+  if (pid <= 0) return false
   try {
     process.kill(pid, 0)
     return true
   } catch {
     return false
   }
+}
+
+/** The inode of whatever is at this path, or undefined if nothing is. */
+export function socketInode(socketPath: string): number | undefined {
+  try {
+    return statSync(socketPath).ino
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Is the socket at the recorded path still the one that was recorded?
+ *
+ * A missing inode means the file predates the check, so liveness of the path
+ * is all there is to go on: reading absence as a mismatch would strand every
+ * timer already on disk.
+ */
+export function socketStillOurs(file: Pick<IdleTimerFile, 'socketPath' | 'socketInode'>): boolean {
+  if (!existsSync(file.socketPath)) return false
+  if (file.socketInode === undefined) return true
+  return socketInode(file.socketPath) === file.socketInode
 }
 
 /**
@@ -213,13 +267,9 @@ export function sweepTimerFiles(): void {
   }
   for (const name of names) {
     const file = readTimerFile(name.replace(/\.json$/, ''))
-    if (!file) {
-      try {
-        unlinkSync(resolve(TIMERS_DIR, name))
-      } catch {}
-      continue
-    }
-    if (!isProcessAlive(file.timerPid) || !existsSync(file.socketPath)) {
+    // Deleted by name, never through deleteTimerFile: a file whose sessionId
+    // field names a different session would take that session's timer with it.
+    if (!file || !isProcessAlive(file.timerPid) || !socketStillOurs(file)) {
       try {
         unlinkSync(resolve(TIMERS_DIR, name))
       } catch {}
@@ -273,4 +323,39 @@ export function sendToInbox(
       })
     })
   })
+}
+
+/**
+ * The poller's entry point, probed rather than assumed.
+ *
+ * Two layouts are live at once. `clauditor hook stop`, which is what
+ * `install.ts` writes, runs the Stop hook inlined into `dist/cli.js`, so the
+ * poller sits in a `hooks` subdirectory; the unbundled `dist/hooks/stop.js`
+ * has it as a sibling. Assuming either one silently produced a spawn that
+ * died on boot with `Cannot find module`, and a timer file naming a dead pid.
+ */
+export function resolvePollerEntry(here: string): string | null {
+  const candidates = [resolve(here, 'hooks', 'idle-timer.js'), resolve(here, 'idle-timer.js')]
+  return candidates.find(existsSync) ?? null
+}
+
+/**
+ * Start a detached poller, and return its pid or 0.
+ *
+ * The `error` handler is not optional. An unhandled `error` event on a
+ * `ChildProcess` throws, and it throws asynchronously, after the Stop hook has
+ * returned and outside its promise chain, where `runHookSafely` cannot catch
+ * it: a spawn that fails under resource pressure would take the hook down
+ * before it wrote its decision. A zero pid is what the caller sees instead,
+ * and the next Stop respawns.
+ */
+export function spawnPoller(
+  entry: string,
+  sessionId: string,
+  execPath: string = process.execPath
+): number {
+  const child = spawn(execPath, [entry, sessionId], { detached: true, stdio: 'ignore' })
+  child.on('error', () => {})
+  child.unref()
+  return child.pid ?? 0
 }

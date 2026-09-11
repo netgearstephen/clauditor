@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createServer } from 'node:net'
 import {
   shouldIdleBank,
+  isProcessAlive,
   IDLE_BANK_DELAY_MS,
   SEND_TIMEOUT_MS,
   type IdleBankFacts,
@@ -82,7 +83,7 @@ describe('shouldIdleBank', () => {
   })
 })
 
-import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { beforeEach, afterEach, vi } from 'vitest'
@@ -284,4 +285,189 @@ describe('sendToInbox', () => {
     },
     SEND_TIMEOUT_MS * 3
   )
+})
+
+describe('isProcessAlive', () => {
+  it('says a live pid is alive', () => {
+    expect(isProcessAlive(process.pid)).toBe(true)
+  })
+
+  it('says a pid above every pid_max is not', () => {
+    expect(isProcessAlive(4_194_304)).toBe(false)
+  })
+
+  it('refuses pid 0, which signals the whole process group', () => {
+    // process.kill(0, 0) succeeds, so a naive liveness test calls 0 alive.
+    // armIdleTimer writes 0 whenever a spawn produces no pid, and a 0 that
+    // reads as alive is never respawned and never swept: the session is
+    // unwatched for ever, with a file on disk carrying a live auth token.
+    expect(isProcessAlive(0)).toBe(false)
+  })
+
+  it('refuses a negative pid, which signals a process group', () => {
+    expect(isProcessAlive(-1)).toBe(false)
+  })
+})
+
+describe('the poller entry point', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-poller-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    vi.doUnmock('node:os')
+  })
+
+  it('finds the poller beside the hooks, where the bundled CLI sits', async () => {
+    const w = await importFresh(tempDir)
+    mkdirSync(join(tempDir, 'hooks'), { recursive: true })
+    writeFileSync(join(tempDir, 'hooks', 'idle-timer.js'), '')
+    expect(w.resolvePollerEntry(tempDir)).toBe(join(tempDir, 'hooks', 'idle-timer.js'))
+  })
+
+  it('finds the poller alongside itself, where the unbundled hook sits', async () => {
+    const w = await importFresh(tempDir)
+    writeFileSync(join(tempDir, 'idle-timer.js'), '')
+    expect(w.resolvePollerEntry(tempDir)).toBe(join(tempDir, 'idle-timer.js'))
+  })
+
+  it('returns null rather than guessing a layout that is not there', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.resolvePollerEntry(tempDir)).toBeNull()
+  })
+
+  it('reports a spawn failure instead of throwing after the hook has returned', async () => {
+    // An unhandled 'error' event on a ChildProcess throws, and it throws
+    // asynchronously, after armIdleTimer has returned and outside
+    // handleStopHook's promise chain, so runHookSafely cannot catch it: a
+    // spawn failure would take the Stop hook down before it wrote a decision.
+    const w = await importFresh(tempDir)
+    const pid = w.spawnPoller(join(tempDir, 'absent.js'), 'sess-1', join(tempDir, 'no-such-node'))
+    expect(pid).toBe(0)
+    // Long enough for the error event to have been emitted and, unhandled,
+    // to have brought this process down.
+    await new Promise((r) => setTimeout(r, 200))
+  })
+})
+
+describe('the recorded socket', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-sock-ino-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    vi.doUnmock('node:os')
+  })
+
+  it('is ours when the inode still matches', async () => {
+    const w = await importFresh(tempDir)
+    const sock = join(tempDir, 'a.sock')
+    writeFileSync(sock, '')
+    expect(w.socketStillOurs({ socketPath: sock, socketInode: w.socketInode(sock) })).toBe(true)
+  })
+
+  it('is not ours once another session has taken that pid and that path', async () => {
+    // Sockets are keyed by pid, and the recorded path is up to 55 minutes old
+    // at fire time. If the original claude exits and a new one takes the pid,
+    // existsSync is satisfied by a socket belonging to a stranger.
+    const w = await importFresh(tempDir)
+    const sock = join(tempDir, 'b.sock')
+    writeFileSync(sock, '')
+    const mine = w.socketInode(sock)
+    rmSync(sock)
+    writeFileSync(sock, '')
+    expect(w.socketStillOurs({ socketPath: sock, socketInode: mine })).toBe(false)
+  })
+
+  it('is not ours when the socket has gone entirely', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.socketStillOurs({ socketPath: join(tempDir, 'gone.sock') })).toBe(false)
+  })
+
+  it('takes a missing inode as no check available, not as a mismatch', async () => {
+    // Timer files already on disk when this shipped have no inode field.
+    // Reading absence as a mismatch would strand every one of them.
+    const w = await importFresh(tempDir)
+    const sock = join(tempDir, 'c.sock')
+    writeFileSync(sock, '')
+    expect(w.socketStillOurs({ socketPath: sock })).toBe(true)
+  })
+
+  it('records the inode at arm time, so the fire-time check has something to compare', async () => {
+    const w = await importFresh(tempDir)
+    const sockDir = join(tempDir, 'cc-socks')
+    mkdirSync(sockDir, { recursive: true })
+    const sock = join(sockDir, `${process.ppid}.sock`)
+    writeFileSync(sock, '')
+    expect(w.socketInode(sock)).toBe(statSync(sock).ino)
+  })
+
+  it('reads no inode from a path with nothing at it', async () => {
+    const w = await importFresh(tempDir)
+    expect(w.socketInode(join(tempDir, 'nothing.sock'))).toBeUndefined()
+  })
+
+  it('sweeps a timer whose socket path now belongs to another session', async () => {
+    const w = await importFresh(tempDir)
+    const sock = join(tempDir, 'reused.sock')
+    writeFileSync(sock, '')
+    const mine = w.socketInode(sock)
+    rmSync(sock)
+    writeFileSync(sock, '')
+    w.writeTimerFile({
+      sessionId: 'reused',
+      timerPid: process.pid,
+      claudePid: process.pid,
+      socketPath: sock,
+      socketInode: mine,
+      token: 't',
+      cwd: '/home/user/project-a',
+      transcriptPath: join(tempDir, 'x.jsonl'),
+      armedAt: 1_000,
+      firesAt: 2_000,
+    } as never)
+    w.sweepTimerFiles()
+    expect(existsSync(w.timerFilePath('reused')!)).toBe(false)
+  })
+})
+
+describe('the timer file\'s permissions', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-timer-mode-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    vi.doUnmock('node:os')
+  })
+
+  const file = {
+    sessionId: 'modes',
+    timerPid: process.pid,
+    claudePid: process.pid,
+    socketPath: '/tmp/cc-socks/1.sock',
+    token: 'secret-token',
+    cwd: '/home/user/project-a',
+    transcriptPath: '/home/user/.claude/projects/p/modes.jsonl',
+    armedAt: 1_000,
+    firesAt: 2_000,
+  }
+
+  it('tightens a file that was already there with looser permissions', async () => {
+    // writeFileSync's mode applies at creation only, so an existing file
+    // keeps whatever it had. The file carries a live auth token.
+    const w = await importFresh(tempDir)
+    w.writeTimerFile(file as never)
+    chmodSync(w.timerFilePath('modes')!, 0o644)
+    w.writeTimerFile(file as never)
+    expect(statSync(w.timerFilePath('modes')!).mode & 0o777).toBe(0o600)
+  })
+
+  it('keeps the directory to its owner too', async () => {
+    const w = await importFresh(tempDir)
+    w.writeTimerFile(file as never)
+    expect(statSync(w.TIMERS_DIR).mode & 0o777).toBe(0o700)
+  })
 })
