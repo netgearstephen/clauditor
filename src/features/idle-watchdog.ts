@@ -160,9 +160,12 @@ export function writeTimerFile(file: IdleTimerFile): void {
   try {
     mkdirSync(TIMERS_DIR, { mode: 0o700, recursive: true })
     writeFileSync(path, JSON.stringify(file, null, 2), { mode: 0o600 })
-    // writeFileSync's mode applies at creation only, so a file that was
-    // already there keeps whatever permissions it had. This one carries a
-    // live auth token for the best part of an hour.
+    // Both modes applied again after the fact, because mkdirSync's and
+    // writeFileSync's apply at creation only: anything that was already there
+    // keeps whatever permissions it had, and the directory this feature
+    // shipped with was created 0755. The file carries a live auth token for
+    // the best part of an hour.
+    chmodSync(TIMERS_DIR, 0o700)
     chmodSync(path, 0o600)
   } catch {}
 }

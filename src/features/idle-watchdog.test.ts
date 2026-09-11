@@ -465,8 +465,12 @@ describe('the timer file\'s permissions', () => {
     expect(statSync(w.timerFilePath('modes')!).mode & 0o777).toBe(0o600)
   })
 
-  it('keeps the directory to its owner too', async () => {
+  it('keeps the directory to its owner too, even one that was already there', async () => {
+    // mkdirSync's mode has the same creation-only weakness, and the directory
+    // this feature shipped with was created 0755.
     const w = await importFresh(tempDir)
+    mkdirSync(w.TIMERS_DIR, { recursive: true })
+    chmodSync(w.TIMERS_DIR, 0o755)
     w.writeTimerFile(file as never)
     expect(statSync(w.TIMERS_DIR).mode & 0o777).toBe(0o700)
   })
