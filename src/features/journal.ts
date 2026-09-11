@@ -103,6 +103,12 @@ export interface JournalState {
   /** The handoff file the last bank produced. Re-banks overwrite it, so a
    * prompt the user pasted at the first bank keeps working. */
   promotedPath: string
+  /** The handoff last advertised to a new session in this directory, and when.
+   * An offer is made once: the session that received it either took it or did
+   * not, and repeating it to every later session in the repo is noise. Keyed
+   * by path, not just by time, so a NEWER handoff still earns its own offer. */
+  offeredPath: string
+  offeredAt: number
   /** Session a bank is about to be requested of, without the user having asked
    * for it. Read and cleared by the session it names, at the point it banks,
    * so that bank writes its marker with the guard already disarmed. */
@@ -122,6 +128,8 @@ const EMPTY_STATE: JournalState = {
   bankRequestedSession: '',
   promotedPath: '',
   unattendedBankSession: '',
+  offeredPath: '',
+  offeredAt: 0,
 }
 
 /** Encode a cwd into a directory name. Mirrors session-state's encoding. */
@@ -1282,6 +1290,27 @@ export function promoteHandoff(
 
   updateJournalState(cwd, (current) => ({ ...current, promotedAt: now.getTime() }))
   return target
+}
+
+/**
+ * Record that this handoff has now been advertised to a new session.
+ *
+ * Called only when an advisory was actually emitted. A session that starts
+ * while the cache is still warm gets no advisory, because resuming the
+ * conversation is cheaper than the handoff; recording an offer there would
+ * burn the one offer on a session the user never saw it in, and the handoff
+ * would then stay silent for the rest of its life.
+ */
+export function recordHandoffOffered(
+  cwd: string | null,
+  path: string,
+  now: number = Date.now()
+): void {
+  updateJournalState(cwd, (current) => ({
+    ...current,
+    offeredPath: path,
+    offeredAt: now,
+  }))
 }
 
 /** The `# Handoff:` title line, if the judgement carries one. */

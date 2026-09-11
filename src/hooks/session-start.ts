@@ -78,8 +78,13 @@ async function buildSessionStartContext(
     // offer and wait, which paid the whole entry cost and a model turn before
     // the user had said whether they wanted it. A systemMessage costs neither.
     if (summary.kind !== 'none' && summary.path) {
-      const { readJournalState, readSessionBank, msSinceLastTurn, readTurns } =
-        await import('../features/journal.js')
+      const {
+        readJournalState,
+        readSessionBank,
+        msSinceLastTurn,
+        readTurns,
+        recordHandoffOffered,
+      } = await import('../features/journal.js')
       const { buildResumeAdvisory } = await import('../features/resume-advisory.js')
 
       // The figures come from the banking session's OWN marker, never from the
@@ -97,13 +102,27 @@ async function buildSessionStartContext(
       const paired = bank !== null && bank.handoffPath === summary.path && bank.peakContext > 0
       const transcript = paired ? findTranscriptPathSync(state.bankedSession) : null
 
-      advisory = buildResumeAdvisory({
-        kind: summary.kind,
-        path: summary.path,
-        peakContext: paired ? bank.peakContext : 0,
-        ageMs: transcript ? msSinceLastTurn(transcript) : null,
-        model: (transcript ? readTurns(transcript).model : null) ?? undefined,
-      })
+      // Offered once, not to every session that opens this repo for the next
+      // week. findUserHandoff has no notion of an offer having been made, so
+      // without this the same document is pitched to unrelated new sessions
+      // until its seven-day window closes: observed live on 2026-09-10, where
+      // a handoff banked at 16:59 was still being offered the following day.
+      //
+      // Keyed on the path, so a newer handoff is a new offer. Recorded only
+      // when an advisory was actually produced, because a warm-cache session
+      // is shown nothing and must not consume the one offer.
+      if (state.offeredPath !== summary.path) {
+        advisory = buildResumeAdvisory({
+          kind: summary.kind,
+          path: summary.path,
+          peakContext: paired ? bank.peakContext : 0,
+          ageMs: transcript ? msSinceLastTurn(transcript) : null,
+          model: (transcript ? readTurns(transcript).model : null) ?? undefined,
+        })
+        if (advisory) {
+          try { recordHandoffOffered(cwd ?? null, summary.path) } catch {}
+        }
+      }
     }
 
     // Inject project knowledge brief (errors, hot files, recent context)
