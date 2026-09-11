@@ -173,6 +173,29 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
+ * Does this pid's command line name our poller?
+ *
+ * A timer file can outlive the poller it names by up to 55 minutes, and pids
+ * recycle in that time. `isProcessAlive` only answers "some process holds
+ * this pid", so anything that signals a pid on that basis alone risks
+ * SIGTERMing an unrelated process the OS has since handed the pid to.
+ * SessionEnd is the caller that matters: it must confirm identity, not just
+ * liveness, before it signals anything. Same shape as `resolveClaudePid`'s
+ * use of `ps` below, since inventing a second way to read a process's
+ * command would be needless.
+ */
+export function isOurPoller(pid: number): boolean {
+  try {
+    const command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf-8',
+    })
+    return command.includes('idle-timer')
+  } catch {
+    return false
+  }
+}
+
+/**
  * Remove timer files whose timer is dead or whose session has exited.
  *
  * The third cleanup mechanism, and the one that needs no signal to arrive.

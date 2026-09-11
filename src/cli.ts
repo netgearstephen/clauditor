@@ -1679,6 +1679,19 @@ hookCmd
     await runHookSafely('session-start', handleSessionStartHook)
   })
 
+hookCmd
+  .command('session-end')
+  .description('SessionEnd hook handler — stops this session\'s idle timer')
+  .action(async () => {
+    const { readStdin, runHookSafely } = await import('./hooks/shared.js')
+    const { handleSessionEndHook } = await import('./hooks/session-end.js')
+    await runHookSafely('session-end', async () => {
+      const raw = await readStdin()
+      await handleSessionEndHook(JSON.parse(raw))
+      process.stdout.write('{}')
+    })
+  })
+
 // ─── Config loader ───────────────────────────────────────────────
 
 async function loadConfig(): Promise<ClauditorConfig> {

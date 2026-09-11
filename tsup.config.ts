@@ -33,6 +33,7 @@ export default defineConfig([
       'hooks/user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
       'hooks/session-start': 'src/hooks/session-start.ts',
       'hooks/idle-timer': 'src/hooks/idle-timer.ts',
+      'hooks/session-end': 'src/hooks/session-end.ts',
     },
     format: ['esm'],
     target: 'node20',

@@ -62,6 +62,10 @@ const CLAUDITOR_HOOKS: Record<string, HookEventConfig> = {
     matcher: '',
     hooks: [{ type: 'command', command: getHookCommand('post-tool-use') }],
   },
+  SessionEnd: {
+    matcher: '',
+    hooks: [{ type: 'command', command: getHookCommand('session-end') }],
+  },
 }
 
 const CLAUDITOR_MARKER = 'clauditor hook'
