@@ -249,7 +249,6 @@ export function socketStillOurs(file: Pick<IdleTimerFile, 'socketPath' | 'socket
  */
 export function isOurPoller(pid: number, sessionId: string): boolean {
   // An empty id would match every command line there is.
-  // An empty id would match every command line there is.
   if (!sessionId) return false
   try {
     const command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
