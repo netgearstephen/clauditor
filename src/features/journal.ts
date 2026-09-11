@@ -404,19 +404,6 @@ export function allowWorkAfterBank(sessionId: string | null): void {
   } catch {}
 }
 
-/**
- * Did the user explicitly ask to keep working after the bank?
- *
- * Deliberately narrow. A bare "continue" is ordinary encouragement and means
- * only "keep going with what you were doing"; lifting a guard on it would make
- * the guard meaningless. The phrase has to name clauditor or name the session.
- */
-export function isExplicitContinue(prompt: string): boolean {
-  return (
-    /\bclauditor\b[\s,:—-]*continue\b/i.test(prompt) ||
-    /\bcontinue\s+in\s+this\s+session\b/i.test(prompt)
-  )
-}
 
 // --- Cache warmth ---
 

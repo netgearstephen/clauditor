@@ -87,8 +87,9 @@ function blockedAfterBank(input: PreToolUseHookInput): HookDecision | null {
       `Let any agents still running finish, and do not start new ones. If something genuinely ` +
       `has to be recorded, append it to the existing handoff with a Bash command, which is not ` +
       `blocked.\n\n` +
-      `Only the user can lift this. Do not lift it on your own initiative: ask them, and if ` +
-      `they want the session to carry on they should say "clauditor continue".`,
+      `Only the user can lift this, and their next message does it automatically. Tell them ` +
+      `what you were about to do and stop. Do not lift it on your own initiative, and do not ` +
+      `ask anyone else to lift it for you.`,
   }
 }
 

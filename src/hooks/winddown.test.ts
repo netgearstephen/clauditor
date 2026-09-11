@@ -79,7 +79,7 @@ describe('winding down after a bank, end to end', () => {
     expect(out.reason).toContain('already banked')
     // The instruction the model needs, not just a refusal.
     expect(out.reason).toContain('do not start new ones')
-    expect(out.reason).toContain('clauditor continue')
+    expect(out.reason).toContain('Tell them')
   }, 30_000)
 
   it('refuses the edits that would make the handoff stale', () => {
@@ -105,14 +105,18 @@ describe('winding down after a bank, end to end', () => {
     expect(run(PRE_TOOL_USE, toolCall('Bash')).decision).toBeUndefined()
   }, 30_000)
 
-  it('lifts the block when the user explicitly says to continue', () => {
+  it('lifts the block as soon as the user says anything at all', () => {
+    // The user typing again IS the decision to carry on. A magic phrase only
+    // ever caught out the person who had not memorised it. Stephen: "they
+    // should just be able to prompt the conversation to keep going. Having a
+    // specific phrase that is needed is stupid."
     markBanked()
     expect(run(PRE_TOOL_USE, toolCall('Task')).decision).toBe('block')
 
     const prompt = run(PROMPT, {
       session_id: SESSION,
       hook_event_name: 'UserPromptSubmit',
-      prompt: 'clauditor continue, I want to keep going',
+      prompt: 'now do the other thing',
       cwd: CWD,
     })
     // The prompt hook blocks nothing, ever.
@@ -121,7 +125,7 @@ describe('winding down after a bank, end to end', () => {
     expect(run(PRE_TOOL_USE, toolCall('Task')).decision).toBeUndefined()
   }, 30_000)
 
-  it('does not lift the block on a bare continue', () => {
+  it('lifts the block on a bare continue, which is what people actually type', () => {
     markBanked()
     run(PROMPT, {
       session_id: SESSION,
@@ -129,7 +133,28 @@ describe('winding down after a bank, end to end', () => {
       prompt: 'continue',
       cwd: CWD,
     })
+    expect(run(PRE_TOOL_USE, toolCall('Task')).decision).toBeUndefined()
+  }, 30_000)
+
+  it('stays armed when the prompt is empty, which is not a person deciding anything', () => {
+    markBanked()
+    run(PROMPT, {
+      session_id: SESSION,
+      hook_event_name: 'UserPromptSubmit',
+      prompt: '',
+      cwd: CWD,
+    })
     expect(run(PRE_TOOL_USE, toolCall('Task')).decision).toBe('block')
+  }, 30_000)
+
+  it('no longer names a phrase for the user to hunt for', () => {
+    // The old message taught the incantation to whoever was blocked, which was
+    // usually an agent. One relayed it, the hook read it out of the agent's own
+    // message, and the guard came off with the user never having said a word.
+    markBanked()
+    const out = run(PRE_TOOL_USE, toolCall('Task'))
+    expect(out.reason).not.toContain('clauditor continue')
+    expect(out.reason).toContain('next message')
   }, 30_000)
 
   it('stays out of the way when the guard is switched off', () => {

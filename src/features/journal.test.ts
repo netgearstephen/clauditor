@@ -1072,13 +1072,4 @@ describe('winding down after a bank', () => {
     expect(bank?.handoffPath).toBe('/tmp/h.md')
   })
 
-  it('recognises an explicit continue in the user prompt', async () => {
-    const { isExplicitContinue } = await importFresh(tempDir)
-    expect(isExplicitContinue('clauditor continue')).toBe(true)
-    expect(isExplicitContinue('Clauditor: continue please')).toBe(true)
-    expect(isExplicitContinue('continue in this session')).toBe(true)
-    // Ordinary encouragement is not permission.
-    expect(isExplicitContinue('continue')).toBe(false)
-    expect(isExplicitContinue('carry on with the next task')).toBe(false)
-  })
 })
