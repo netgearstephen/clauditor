@@ -436,6 +436,43 @@ describe('journal', () => {
     })
   })
 
+  describe('an unattended bank', () => {
+    it('leaves the session able to keep working', async () => {
+      const j = await importFresh(tempDir)
+      // The user never asked for this bank. Returning to a session that refuses
+      // edits until you find the continue phrase is a trap.
+      j.markSessionBanked('woken', CWD, Date.now(), {
+        peakContext: 120_000,
+        handoffPath: '/h/woken.md',
+        continueAfterBank: true,
+      })
+      expect(j.isBlockedAfterBank('woken', 'Edit')).toBe(false)
+      expect(j.readSessionBank('woken')?.handoffPath).toBe('/h/woken.md')
+    })
+
+    it('still blocks after a bank the user asked for', async () => {
+      const j = await importFresh(tempDir)
+      j.markSessionBanked('asked', CWD, Date.now(), {
+        peakContext: 120_000,
+        handoffPath: '/h/asked.md',
+      })
+      expect(j.isBlockedAfterBank('asked', 'Edit')).toBe(true)
+    })
+
+    it('hands the flag to exactly one reader', async () => {
+      const j = await importFresh(tempDir)
+      j.markUnattendedBank(CWD, 'woken')
+      expect(j.takeUnattendedBank(CWD, 'woken')).toBe(true)
+      expect(j.takeUnattendedBank(CWD, 'woken')).toBe(false)
+    })
+
+    it('ignores a flag left by another session', async () => {
+      const j = await importFresh(tempDir)
+      j.markUnattendedBank(CWD, 'theirs')
+      expect(j.takeUnattendedBank(CWD, 'mine')).toBe(false)
+    })
+  })
+
   describe('the journal state under two concurrent sessions', () => {
     it('applies an update to the state as it stands, not to a stale snapshot', async () => {
       const j = await importFresh(tempDir)

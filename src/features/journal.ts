@@ -103,6 +103,10 @@ export interface JournalState {
   /** The handoff file the last bank produced. Re-banks overwrite it, so a
    * prompt the user pasted at the first bank keeps working. */
   promotedPath: string
+  /** Session a bank is about to be requested of, without the user having asked
+   * for it. Read and cleared by the session it names, at the point it banks,
+   * so that bank writes its marker with the guard already disarmed. */
+  unattendedBankSession: string
 }
 
 const EMPTY_STATE: JournalState = {
@@ -117,6 +121,7 @@ const EMPTY_STATE: JournalState = {
   bankRequestedAtPeak: 0,
   bankRequestedSession: '',
   promotedPath: '',
+  unattendedBankSession: '',
 }
 
 /** Encode a cwd into a directory name. Mirrors session-state's encoding. */
@@ -146,6 +151,34 @@ export function readJournalState(cwd: string | null): JournalState {
   } catch {
     return { ...EMPTY_STATE }
   }
+}
+
+/**
+ * Record that the bank about to be requested was nobody's idea but ours.
+ *
+ * Written by the watchdog before it wakes the session, because that message
+ * is sent and then the watchdog exits: this flag is the only way the Stop
+ * hook that later handles the request can tell it was never asked for by the
+ * user.
+ */
+export function markUnattendedBank(cwd: string | null, sessionId: string | null): void {
+  updateJournalState(cwd, (state) => ({ ...state, unattendedBankSession: sessionId ?? '' }))
+}
+
+/**
+ * Read the unattended flag and clear it, in one update.
+ *
+ * Cleared on read, because the next bank in this directory may well be one
+ * the user asked for, and a flag left set would silently disarm the guard for
+ * that one too.
+ */
+export function takeUnattendedBank(cwd: string | null, sessionId: string | null): boolean {
+  let taken = false
+  updateJournalState(cwd, (state) => {
+    taken = state.unattendedBankSession !== '' && state.unattendedBankSession === (sessionId ?? '')
+    return taken ? { ...state, unattendedBankSession: '' } : state
+  })
+  return taken
 }
 
 export function writeJournalState(cwd: string | null, state: JournalState): void {
@@ -298,7 +331,11 @@ export function markSessionBanked(
   sessionId: string | null,
   cwd: string | null,
   now: number = Date.now(),
-  { peakContext = 0, handoffPath = '' }: { peakContext?: number; handoffPath?: string } = {}
+  {
+    peakContext = 0,
+    handoffPath = '',
+    continueAfterBank = false,
+  }: { peakContext?: number; handoffPath?: string; continueAfterBank?: boolean } = {}
 ): void {
   const path = bankMarkerPath(sessionId)
   if (!path) return
@@ -306,7 +343,10 @@ export function markSessionBanked(
     mkdirSync(BANKED_DIR, { recursive: true })
     writeFileSync(
       path,
-      JSON.stringify({ bankedAt: now, cwd, peakContext, handoffPath }, null, 2)
+      // A bank nobody asked for writes the continue flag straight in, so the
+      // guard never arms. isBlockedAfterBank already honours it, so no guard
+      // logic changes here.
+      JSON.stringify({ bankedAt: now, cwd, peakContext, handoffPath, continueAfterBank }, null, 2)
     )
   } catch {
     return
@@ -991,7 +1031,11 @@ export function adoptBankedHandoff(
       // Already in the user's directory, so there is nothing left to promote.
       promotedAt: now,
     }))
-    markSessionBanked(sessionId, cwd, now, { peakContext, handoffPath: target })
+    markSessionBanked(sessionId, cwd, now, {
+      peakContext,
+      handoffPath: target,
+      continueAfterBank: takeUnattendedBank(cwd, sessionId),
+    })
     return target
   }
 
@@ -1099,6 +1143,7 @@ function storeJudgement(
     markSessionBanked(sessionId, cwd, now, {
       peakContext,
       handoffPath: pendingHandoffPath(cwd),
+      continueAfterBank: takeUnattendedBank(cwd, sessionId),
     })
   return true
 }
