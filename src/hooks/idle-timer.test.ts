@@ -122,4 +122,36 @@ describe('the idle timer', () => {
     server.close()
     expect(existsSync(w.timerFilePath('idle-1')!)).toBe(false)
   })
+
+  it('logs a stood-down session, so an unattended silence is still auditable', async () => {
+    const { timer, server } = await arm()
+    const cfg = await import('../config.js')
+    // Rotation disabled is the cheapest way to reach shouldIdleBank's
+    // 'nothing' branch without needing a live bank or a particular growth.
+    cfg.writeConfig({
+      rotation: { enabled: false, minPeakContext: 200_000, reBankGrowth: 50_000, blockAfterBank: true },
+      notifications: { desktop: true },
+    })
+
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('nothing')
+    server.close()
+
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message.includes('idle timer stood down'))).toBe(true)
+  })
+
+  it('logs a session it declines to wake into a cold cache, so the silence is auditable', async () => {
+    const { CACHE_TTL_MS } = await import('../features/journal.js')
+    const { timer, server } = await arm({
+      transcriptPath: transcript(tempDir, CACHE_TTL_MS + 60_000, 300_000),
+    })
+
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('notify')
+    server.close()
+
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message.includes('cache-cold'))).toBe(true)
+  })
 })

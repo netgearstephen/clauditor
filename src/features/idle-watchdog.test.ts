@@ -3,6 +3,7 @@ import { createServer } from 'node:net'
 import {
   shouldIdleBank,
   IDLE_BANK_DELAY_MS,
+  SEND_TIMEOUT_MS,
   type IdleBankFacts,
 } from './idle-watchdog.js'
 
@@ -232,4 +233,29 @@ describe('sendToInbox', () => {
     const w = await importFresh(tempDir)
     await expect(w.sendToInbox(join(tempDir, 'absent.sock'), 't', 'hi')).resolves.toBe(false)
   })
+
+  it(
+    'gives up rather than waiting forever on a peer that never reads',
+    async () => {
+      const w = await importFresh(tempDir)
+      const sockPath = join(tempDir, 'wedged.sock')
+      // Accepts the connection and then never reads from it, so the
+      // message's write callback never fires: exactly the wedged-peer
+      // scenario the timeout exists for.
+      const server = createServer(() => {})
+      await new Promise<void>((r) => server.listen(sockPath, r))
+
+      // A message large enough to overrun the kernel's socket buffers, so the
+      // write genuinely cannot flush while nothing on the other end reads:
+      // a tiny message would clear the buffer and flush regardless.
+      const ok = await w.sendToInbox(sockPath, 'tok', 'x'.repeat(16 * 1024 * 1024))
+      server.close()
+
+      expect(ok).toBe(false)
+      // Comfortably above the constant, not equal to it: a socket blocked on
+      // a large synchronous write can take a multiple of the configured
+      // timeout to actually settle, and this must not flake because of that.
+    },
+    SEND_TIMEOUT_MS * 3
+  )
 })

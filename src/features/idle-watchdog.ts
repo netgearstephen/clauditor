@@ -172,6 +172,18 @@ export function sweepTimerFiles(): void {
 }
 
 /**
+ * How long sendToInbox waits for the write to flush before giving up.
+ *
+ * A live, listening session whose peer is wedged or backlogged never fires
+ * the write's flush callback, and without a timeout that leaves the detached
+ * poller awaiting it forever: nothing left to kill it, and sweepTimerFiles
+ * cannot reap a timer file whose timerPid is that very hung process. Five
+ * seconds is generous for a local Unix socket write and short enough that a
+ * genuinely wedged peer is reported, not waited on.
+ */
+export const SEND_TIMEOUT_MS = 5_000
+
+/**
  * Hand a message to a live session's inbox.
  *
  * The auth frame goes first, on its own line. Without it a session running
@@ -191,9 +203,11 @@ export function sendToInbox(
     const done = (ok: boolean) => {
       if (settled) return
       settled = true
+      socket.destroy()
       resolve(ok)
     }
     const socket = connect(socketPath)
+    socket.setTimeout(SEND_TIMEOUT_MS, () => done(false))
     socket.on('error', () => done(false))
     socket.on('connect', () => {
       socket.write(`${JSON.stringify({ type: 'auth', token })}\n`)

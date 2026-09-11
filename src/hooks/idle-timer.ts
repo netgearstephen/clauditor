@@ -123,6 +123,14 @@ async function main(): Promise<void> {
   const sessionId = process.argv[2]
   if (!sessionId) return
   for (;;) {
+    // Checked here, not inside runIdleTimerOnce: the tests call that
+    // directly under their own pid, and it must still act. A poller left
+    // running from an earlier arming otherwise keeps looping on whatever
+    // file now sits at this path, and two such pollers can both read the
+    // file and both send inside the same await sendToInbox window, turning
+    // one arming into two bank requests.
+    const file = readTimerFile(sessionId)
+    if (!file || file.timerPid !== process.pid) return
     const outcome = await runIdleTimerOnce(sessionId)
     if (outcome !== 'waiting') return
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
