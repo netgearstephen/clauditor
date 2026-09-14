@@ -440,6 +440,35 @@ describe('Idle timer arming, end to end', () => {
     })
   }
 
+  it('arms without the hook environment token, which is not the credential the poller uses', () => {
+    // The poller authenticates with the session's peerToken, read from its
+    // key file at fire time. Gating arming on CLAUDE_CODE_MESSAGING_TOKEN
+    // withheld the timer over a secret nothing goes on to present, and
+    // writing it into the file left a live credential on disk for 55 minutes
+    // for no purpose at all.
+    const sockDir = join(home, 'cc-socks')
+    mkdirSync(sockDir, { recursive: true })
+    writeFileSync(join(sockDir, `${process.pid}.sock`), '')
+
+    execFileSync('node', [HOOK], {
+      input: JSON.stringify({
+        session_id: 'e2e-untokened',
+        transcript_path: transcript,
+        stop_hook_active: true,
+        hook_event_name: 'Stop',
+      }),
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: home, CLAUDITOR_SOCK_DIR: sockDir },
+      timeout: 30_000,
+    })
+
+    const timerPath = join(home, '.clauditor', 'timers', 'e2e-untokened.json')
+    const file = JSON.parse(readFileSync(timerPath, 'utf-8'))
+    armedPid = file.timerPid
+    expect(file.socketPath).toBe(join(sockDir, `${process.pid}.sock`))
+    expect(file).not.toHaveProperty('token')
+  })
+
   it('arms one idle timer per session, and pushes it out on the next stop', () => {
     const sockDir = join(home, 'cc-socks')
     mkdirSync(sockDir, { recursive: true })

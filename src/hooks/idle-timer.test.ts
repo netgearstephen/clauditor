@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
+import { createHash } from 'node:crypto'
 
 async function importFresh(tempDir: string) {
   vi.resetModules()
@@ -49,9 +50,26 @@ describe('the idle timer', () => {
     vi.doUnmock('node:os')
   })
 
+  /**
+   * Publish the key file Claude Code writes for a live session, which is
+   * where the poller now reads its peer token from.
+   */
+  function publishPeerToken(sockPath: string, peerToken = 'peer-secret') {
+    const dir = join(tempDir, '.claude', 'sessions')
+    mkdirSync(dir, { recursive: true })
+    const pid = Number(sockPath.match(/(\d+)\.sock$/)![1])
+    const hash = createHash('sha256').update(sockPath).digest('hex')
+    writeFileSync(join(dir, `${pid}.${hash}.key`), JSON.stringify({ peerToken }))
+    writeFileSync(join(dir, `${pid}.json`), JSON.stringify({ pid, name: 'clauditor-x1' }))
+  }
+
   async function arm(over: Record<string, unknown> = {}) {
     const { timer, w } = await importFresh(tempDir)
-    const sockPath = join(tempDir, 'inbox.sock')
+    // Named for a pid, as Claude Code names them: readInboxAuth finds the
+    // session's key file by the pid in its socket path.
+    const sockPath = join(tempDir, `${process.pid}.sock`)
+    if (over.publishToken !== false) publishPeerToken(sockPath)
+    delete over.publishToken
     const received: string[] = []
     const server = createServer((c) => {
       c.on('data', (b) => received.push(...b.toString().split('\n').filter(Boolean)))
@@ -89,6 +107,31 @@ describe('the idle timer', () => {
     server.close()
     expect(JSON.parse(received[0]).type).toBe('auth')
     expect(received[1]).toContain('cheapest moment')
+  })
+
+  it("authenticates with the session's peer token, not the one armed into the file", async () => {
+    // The timer file used to carry CLAUDE_CODE_MESSAGING_TOKEN, the
+    // childToken, which a detached poller cannot use: it reparents to
+    // launchd and stops being a child long before it fires.
+    const { timer, server, received } = await arm()
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+    expect(JSON.parse(received[0]).token).toBe('peer-secret')
+  })
+
+  it('logs a bank it could not send when the session has taken its key file away', async () => {
+    // A session that exited between arming and firing leaves the socket path
+    // behind but not the key, and an unauthenticated send is silently
+    // dropped, so there would otherwise be no record of the attempt at all.
+    const { timer, server } = await arm({ publishToken: false })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    server.close()
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(
+      events.some((e) => e.message === 'idle bank could not be sent at 300000 peak context')
+    ).toBe(true)
   })
 
   it('logs a bank sent, claiming no more than the write proves', async () => {

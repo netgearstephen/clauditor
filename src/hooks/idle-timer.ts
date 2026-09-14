@@ -14,6 +14,7 @@ import {
 } from '../features/journal.js'
 import {
   deleteTimerFile,
+  readInboxAuth,
   readTimerFile,
   sendToInbox,
   shouldIdleBank,
@@ -122,17 +123,24 @@ export async function runIdleTimerOnce(
     markBankRequested(sessionId, now)
     // The woken session must not come back to a guard it never armed.
     markUnattendedBank(cwd, sessionId)
-    const sent = await sendToInbox(
-      file.socketPath,
-      file.token,
-      bankInstruction(facts.peakContext, {
-        stamp: handoffStamp(),
-        // The session's OWN bank. Never state.promotedPath: that told a
-        // session which had never banked to overwrite another session's
-        // document, and destroyed a real handoff on 2026-09-10.
-        rewritePath: readSessionBank(sessionId)?.handoffPath ?? '',
-      })
-    )
+    // Read now, not at arm time: the peerToken is what a detached sender must
+    // present, it lives in the session's key file rather than any hook's
+    // environment, and a session that has exited since arming has taken it
+    // with it, which is the honest signal that there is nothing left to wake.
+    const auth = readInboxAuth(file.socketPath)
+    const sent =
+      auth !== null &&
+      (await sendToInbox(
+        file.socketPath,
+        auth,
+        bankInstruction(facts.peakContext, {
+          stamp: handoffStamp(),
+          // The session's OWN bank. Never state.promotedPath: that told a
+          // session which had never banked to overwrite another session's
+          // document, and destroyed a real handoff on 2026-09-10.
+          rewritePath: readSessionBank(sessionId)?.handoffPath ?? '',
+        })
+      ))
     await logActivity({
       type: 'context_warning',
       session,

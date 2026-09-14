@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   shouldIdleBank,
   isProcessAlive,
+  readInboxAuth,
   IDLE_BANK_DELAY_MS,
   SEND_TIMEOUT_MS,
   type IdleBankFacts,
+  type InboxAuth,
 } from './idle-watchdog.js'
 
 /** A session that is idle, large, warm, unbanked and still listening. */
@@ -239,27 +242,74 @@ describe('sendToInbox', () => {
     rmSync(tempDir, { recursive: true, force: true })
   })
 
-  it('authenticates before it says anything else', async () => {
-    const w = await importFresh(tempDir)
-    const sockPath = join(tempDir, 'inbox.sock')
+  const auth: InboxAuth = { peerToken: 'secret-token', name: 'clauditor-x1', mode: 'bypass' }
+
+  /** Collects the lines a send writes, so each test can assert on the frames. */
+  async function capture(
+    w: Awaited<ReturnType<typeof importFresh>>,
+    sockPath: string,
+    message = 'bank please'
+  ) {
     const lines: string[] = []
     const server = createServer((c) => {
       c.on('data', (b) => lines.push(...b.toString().split('\n').filter(Boolean)))
     })
     await new Promise<void>((r) => server.listen(sockPath, r))
-
-    const ok = await w.sendToInbox(sockPath, 'secret-token', 'bank please')
+    const ok = await w.sendToInbox(sockPath, auth, message)
     await new Promise((r) => setTimeout(r, 50))
     server.close()
+    return { ok, lines }
+  }
+
+  it('authenticates before it says anything else', async () => {
+    const w = await importFresh(tempDir)
+    const sockPath = join(tempDir, 'inbox.sock')
+
+    const { ok, lines } = await capture(w, sockPath)
 
     expect(ok).toBe(true)
     expect(JSON.parse(lines[0])).toEqual({ type: 'auth', token: 'secret-token' })
-    expect(lines[1]).toContain('bank please')
+  })
+
+  it('sends a frame the inbox dispatches, not one it discards', async () => {
+    // The inbox routes on type 'user' and reads the body from message.content.
+    // The old {type:'message', message:'<string>'} frame authenticated, was
+    // accepted, matched no handler and was dropped in silence: the reason the
+    // watchdog never banked once in fourteen firings.
+    const w = await importFresh(tempDir)
+    const sockPath = join(tempDir, 'inbox.sock')
+
+    const { lines } = await capture(w, sockPath)
+
+    const frame = JSON.parse(lines[1])
+    expect(frame).toMatchObject({
+      msgV: 1,
+      type: 'user',
+      message: { role: 'user' },
+      priority: 'next',
+      from: `uds:${sockPath}`,
+    })
+    expect(frame.msg_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/)
+    expect(frame.message.content).toContain('bank please')
+  })
+
+  it('attests its permission mode, so the message is not held for an approval nobody will give', async () => {
+    // Without the attestation a bypassing session holds the message with
+    // reason 'no-mode-asserted' and waits for a human who, by the whole
+    // premise of an idle-bank watchdog, has walked away.
+    const w = await importFresh(tempDir)
+    const sockPath = join(tempDir, 'inbox.sock')
+
+    const { lines } = await capture(w, sockPath)
+
+    expect(JSON.parse(lines[1]).message.content).toContain(
+      `<cross-session-message from="uds:${sockPath}" from-name="clauditor-x1" from-mode="bypass">`
+    )
   })
 
   it('reports failure rather than throwing when nothing is listening', async () => {
     const w = await importFresh(tempDir)
-    await expect(w.sendToInbox(join(tempDir, 'absent.sock'), 't', 'hi')).resolves.toBe(false)
+    await expect(w.sendToInbox(join(tempDir, 'absent.sock'), auth, 'hi')).resolves.toBe(false)
   })
 
   it(
@@ -276,7 +326,7 @@ describe('sendToInbox', () => {
       // A message large enough to overrun the kernel's socket buffers, so the
       // write genuinely cannot flush while nothing on the other end reads:
       // a tiny message would clear the buffer and flush regardless.
-      const ok = await w.sendToInbox(sockPath, 'tok', 'x'.repeat(16 * 1024 * 1024))
+      const ok = await w.sendToInbox(sockPath, auth, 'x'.repeat(16 * 1024 * 1024))
       server.close()
 
       expect(ok).toBe(false)
@@ -286,6 +336,68 @@ describe('sendToInbox', () => {
     },
     SEND_TIMEOUT_MS * 3
   )
+})
+
+describe('readInboxAuth', () => {
+  let tempDir: string
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'clauditor-auth-'))
+  })
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  /** Publish the two files Claude Code writes for a live session. */
+  function publish(sockPath: string, over: Record<string, unknown> = {}): string {
+    const dir = join(tempDir, 'sessions')
+    mkdirSync(dir, { recursive: true })
+    const pid = Number(sockPath.match(/(\d+)\.sock$/)![1])
+    const hash = createHash('sha256').update(sockPath).digest('hex')
+    writeFileSync(join(dir, `${pid}.${hash}.key`), JSON.stringify({ peerToken: 'peer-secret' }))
+    writeFileSync(join(dir, `${pid}.json`), JSON.stringify({ pid, name: 'clauditor-x1', ...over }))
+    return dir
+  }
+
+  it('reads the peer token, which is not the token in the hook environment', () => {
+    // CLAUDE_CODE_MESSAGING_TOKEN is the childToken, and it only counts for a
+    // sender the session can still see as its own descendant. A detached
+    // poller is not one, so it must present the peerToken from the key file.
+    const sockPath = join(tempDir, '4242.sock')
+    const dir = publish(sockPath)
+
+    expect(readInboxAuth(sockPath, dir, () => 'claude')?.peerToken).toBe('peer-secret')
+  })
+
+  it('reads the session name the inbox renders the message under', () => {
+    const sockPath = join(tempDir, '4242.sock')
+    const dir = publish(sockPath)
+
+    expect(readInboxAuth(sockPath, dir, () => 'claude')?.name).toBe('clauditor-x1')
+  })
+
+  it('calls a session that skips permission prompts a bypassing one', () => {
+    const sockPath = join(tempDir, '4242.sock')
+    const dir = publish(sockPath)
+
+    const command = 'claude --dangerously-skip-permissions'
+    expect(readInboxAuth(sockPath, dir, () => command)?.mode).toBe('bypass')
+  })
+
+  it('calls any other session a prompting one, so parity is never overclaimed', () => {
+    // Claiming 'bypass' at a prompting session earns a mode-mismatch hold,
+    // which is the same dead end as asserting no mode at all.
+    const sockPath = join(tempDir, '4242.sock')
+    const dir = publish(sockPath)
+
+    expect(readInboxAuth(sockPath, dir, () => 'claude')?.mode).toBe('prompting')
+  })
+
+  it('returns null when the session has gone and taken its key file with it', () => {
+    const sockPath = join(tempDir, '4242.sock')
+    mkdirSync(join(tempDir, 'sessions'), { recursive: true })
+
+    expect(readInboxAuth(sockPath, join(tempDir, 'sessions'), () => 'claude')).toBeNull()
+  })
 })
 
 describe('isProcessAlive', () => {

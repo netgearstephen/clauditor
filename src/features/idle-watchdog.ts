@@ -9,6 +9,7 @@ import {
   statSync,
 } from 'node:fs'
 import { execFileSync, spawn } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { connect } from 'node:net'
@@ -120,11 +121,10 @@ export const TIMERS_DIR = resolve(homedir(), '.clauditor', 'timers')
 /**
  * What the timer is told at arm time.
  *
- * The token is copied out of the Stop hook's environment because macOS does
- * not let one process read another's environment later, and the timer needs
- * it to authenticate to the inbox socket an hour after the hook has exited.
- * That is a live secret with a longer life than it has today, which is why
- * the file is 0600 and is deleted the moment it fires or is replaced.
+ * No credential among it. The poller authenticates with the session's
+ * peerToken, which it reads from the key file at fire time, so nothing here
+ * has to outlive the hook that wrote it. The file stays 0600 regardless: it
+ * names a live socket and a transcript path.
  */
 export interface IdleTimerFile {
   sessionId: string
@@ -141,7 +141,6 @@ export interface IdleTimerFile {
    * absence has to mean "no check available" rather than "mismatch".
    */
   socketInode?: number
-  token: string
   cwd: string
   transcriptPath: string
   armedAt: number
@@ -163,8 +162,8 @@ export function writeTimerFile(file: IdleTimerFile): void {
     // Both modes applied again after the fact, because mkdirSync's and
     // writeFileSync's apply at creation only: anything that was already there
     // keeps whatever permissions it had, and the directory this feature
-    // shipped with was created 0755. The file carries a live auth token for
-    // the best part of an hour.
+    // shipped with was created 0755. The file names a live socket and a
+    // transcript path, neither of which is anyone else's business.
     chmodSync(TIMERS_DIR, 0o700)
     chmodSync(path, 0o600)
   } catch {}
@@ -300,19 +299,104 @@ export function sweepTimerFiles(): void {
  */
 export const SEND_TIMEOUT_MS = 5_000
 
+/** What a sender must know about an inbox before it can reach the session. */
+export interface InboxAuth {
+  /** The session's peer secret, published in its key file. */
+  peerToken: string
+  /** The name the inbox renders the message under. */
+  name: string
+  /** The permission class the sender attests, which must match the session's. */
+  mode: 'bypass' | 'prompting'
+}
+
+/** Where Claude Code publishes one key file and one registry entry per session. */
+export const SESSIONS_DIR = resolve(homedir(), '.claude', 'sessions')
+
+/** The command line of a pid, empty when it cannot be read. */
+function commandOfPid(pid: number): string {
+  try {
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' })
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Read what the poller needs to authenticate to its own session's inbox.
+ *
+ * Claude Code mints two secrets per session. `CLAUDE_CODE_MESSAGING_TOKEN`,
+ * the one every hook has in its environment, is the **childToken**, and it
+ * only counts for a sender the session can still see as its own descendant.
+ * A poller is spawned detached and reparents to launchd within the second, so
+ * by the time it fires it is not a descendant of anything and that token buys
+ * it nothing. The **peerToken** is what a non-child must present, and it is
+ * published at `~/.claude/sessions/<pid>.<sha256 of socket path>.key`, 0600,
+ * readable for as long as the session lives. Reading it at fire time also
+ * means the timer file no longer has to carry a live secret for 55 minutes.
+ */
+export function readInboxAuth(
+  socketPath: string,
+  sessionsDir: string = SESSIONS_DIR,
+  commandOf: (pid: number) => string = commandOfPid
+): InboxAuth | null {
+  const pid = Number(socketPath.match(/(\d+)\.sock$/)?.[1])
+  if (!Number.isFinite(pid)) return null
+  // The key file is named for the socket it authenticates, so a session that
+  // exited and left a stale entry behind cannot lend its token to a new one.
+  const hash = createHash('sha256').update(socketPath).digest('hex')
+  let peerToken: unknown
+  try {
+    peerToken = JSON.parse(
+      readFileSync(resolve(sessionsDir, `${pid}.${hash}.key`), 'utf-8')
+    ).peerToken
+  } catch {
+    return null
+  }
+  if (typeof peerToken !== 'string' || !peerToken) return null
+  // The name is cosmetic, so a registry entry that is missing or half-written
+  // costs the message its label, never its delivery.
+  let name = ''
+  try {
+    name = JSON.parse(readFileSync(resolve(sessionsDir, `${pid}.json`), 'utf-8')).name ?? ''
+  } catch {}
+  // Attesting a class the session is not in earns a mode-mismatch hold, which
+  // is the same dead end as attesting nothing, so this never guesses upwards.
+  const mode = commandOf(pid).includes('--dangerously-skip-permissions') ? 'bypass' : 'prompting'
+  return { peerToken, name, mode }
+}
+
+/**
+ * Wrap a message the way the inbox's own parser expects to find it.
+ *
+ * The permission class is attested here, in the envelope, and it is not
+ * decoration: a session that bypasses prompts holds an unattested message
+ * with reason `no-mode-asserted` and waits for a human to approve it. The
+ * whole premise of an idle-bank watchdog is that no human is there, so an
+ * unattested wake expires unread after five minutes. This is what fourteen
+ * firings and nine probes cost to learn.
+ */
+function attested(socketPath: string, auth: InboxAuth, message: string): string {
+  return [
+    `<cross-session-message from="uds:${socketPath}" from-name="${auth.name}" from-mode="${auth.mode}">`,
+    message,
+    '</cross-session-message>',
+  ].join('\n')
+}
+
 /**
  * Hand a message to a live session's inbox.
  *
- * The auth frame goes first, on its own line. Without it a session running
- * with permissions skipped cannot verify the sender as its own child, holds
- * the message for an approval nobody is present to give, and lets it expire
- * after five minutes. On macOS the process evidence counts only while the
- * sender is still running, so this resolves after the write has flushed and
- * the caller must stay alive until it does.
+ * The auth frame goes first, on its own line, or the message is dropped from
+ * a connection that never authenticated. The frame that follows is the one
+ * the inbox actually dispatches on: type `user`, the body under
+ * `message.content`, and an `msg_id` the recipient echoes in its receipts.
+ * A frame of any other shape authenticates, is accepted, matches no handler
+ * and is discarded without a reply, which is precisely how this feature
+ * managed fourteen firings and no banks at all.
  */
 export function sendToInbox(
   socketPath: string,
-  token: string,
+  auth: InboxAuth,
   message: string
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -327,11 +411,21 @@ export function sendToInbox(
     socket.setTimeout(SEND_TIMEOUT_MS, () => done(false))
     socket.on('error', () => done(false))
     socket.on('connect', () => {
-      socket.write(`${JSON.stringify({ type: 'auth', token })}\n`)
-      socket.write(`${JSON.stringify({ type: 'message', message })}\n`, () => {
-        socket.end()
-        done(true)
-      })
+      socket.write(`${JSON.stringify({ type: 'auth', token: auth.peerToken })}\n`)
+      socket.write(
+        `${JSON.stringify({
+          msgV: 1,
+          msg_id: randomUUID(),
+          type: 'user',
+          message: { role: 'user', content: attested(socketPath, auth, message) },
+          priority: 'next',
+          from: `uds:${socketPath}`,
+        })}\n`,
+        () => {
+          socket.end()
+          done(true)
+        }
+      )
     })
   })
 }

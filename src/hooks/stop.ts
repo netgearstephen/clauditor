@@ -377,8 +377,7 @@ function armIdleTimer(input: StopHookInput): void {
 
   const claude = resolveClaudePid()
   if (!claude) return
-  const token = process.env.CLAUDE_CODE_MESSAGING_TOKEN
-  if (!token || !input.transcript_path) return
+  if (!input.transcript_path) return
 
   const now = Date.now()
   const existing = readTimerFile(input.session_id)
@@ -390,7 +389,6 @@ function armIdleTimer(input: StopHookInput): void {
     claudePid: claude.pid,
     socketPath: claude.socketPath,
     socketInode: socketInode(claude.socketPath),
-    token,
     cwd: cwdFromTranscript(input.transcript_path) ?? process.cwd(),
     transcriptPath: input.transcript_path,
     armedAt: now,
