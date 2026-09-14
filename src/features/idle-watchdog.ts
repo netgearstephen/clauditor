@@ -47,7 +47,14 @@ export interface IdleBankFacts {
 export type IdleBankVerdict =
   | { act: 'bank' }
   | { act: 'notify'; reason: 'cache-cold' | 'session-gone' }
-  | { act: 'nothing'; reason: string }
+  /**
+   * `retry` marks the one stand-down that waiting can change.
+   *
+   * A flag rather than the timer matching on `reason`, so the rule stays here
+   * with the rest of them and a reworded string cannot silently turn a
+   * retryable stand-down into a terminal one.
+   */
+  | { act: 'nothing'; reason: string; retry?: true }
 
 /**
  * Should this idle session be woken and asked to bank?
@@ -64,7 +71,10 @@ export function shouldIdleBank(facts: IdleBankFacts): IdleBankVerdict {
   // The timer wakes on a clock. The transcript decides whether the session is
   // idle, so a turn taken since arming cancels the firing outright.
   if (facts.msSinceLastTurn < IDLE_BANK_DELAY_MS) {
-    return { act: 'nothing', reason: 'a turn landed since arming' }
+    // Retryable, and the only one that is: the session is alive, large and
+    // unbanked, and it will go quiet later. Everything below this point is a
+    // fact about the session that sitting and waiting cannot alter.
+    return { act: 'nothing', reason: 'a turn landed since arming', retry: true }
   }
   if (!facts.rotationEnabled) return { act: 'nothing', reason: 'rotation disabled' }
   if (facts.peakContext < RESUME_BREAK_EVEN) {

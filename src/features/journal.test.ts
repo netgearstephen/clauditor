@@ -23,6 +23,13 @@ function transcriptWith(timestamps: string[], dir: string): string {
   return path
 }
 
+/** A transcript of arbitrary typed records, written in the order given. */
+function transcriptOf(records: object[], dir: string): string {
+  const path = join(dir, 'typed-transcript.jsonl')
+  writeFileSync(path, records.map((r) => JSON.stringify(r)).join('\n'))
+  return path
+}
+
 /** Write a handoff of the shape the /handoff skill produces. */
 function writeUserHandoff(
   home: string,
@@ -100,6 +107,54 @@ describe('journal', () => {
       )
       const now = Date.parse('2026-09-08T10:40:00Z')
       expect(msSinceLastTurn(path, now)).toBe(10 * 60 * 1000)
+    })
+
+    it('ignores bookkeeping written after the last real turn', async () => {
+      const { msSinceLastTurn } = await importFresh(tempDir)
+      // Claude Code keeps writing timestamped records after the turn ends:
+      // stop_hook_summary and turn_duration immediately, then away_summary
+      // about three minutes later, when the user walks away. Counting those
+      // as turns makes the one event the watchdog exists to detect reset the
+      // watchdog's own clock.
+      const path = transcriptOf(
+        [
+          { type: 'assistant', timestamp: '2026-09-08T10:00:00Z' },
+          { type: 'system', subtype: 'stop_hook_summary', timestamp: '2026-09-08T10:00:01Z' },
+          { type: 'system', subtype: 'turn_duration', timestamp: '2026-09-08T10:00:02Z' },
+          { type: 'system', subtype: 'away_summary', timestamp: '2026-09-08T10:03:00Z' },
+        ],
+        tempDir
+      )
+      const now = Date.parse('2026-09-08T10:30:00Z')
+      expect(msSinceLastTurn(path, now)).toBe(30 * 60 * 1000)
+    })
+
+    it('ignores every timestamped record that is not a turn', async () => {
+      const { msSinceLastTurn } = await importFresh(tempDir)
+      // Measured across live transcripts: attachment and queue-operation
+      // carry timestamps too, and outnumber the system records. An allowlist
+      // of user and assistant covers them all; a denylist would not.
+      const path = transcriptOf(
+        [
+          { type: 'user', timestamp: '2026-09-08T10:00:00Z' },
+          { type: 'attachment', timestamp: '2026-09-08T10:10:00Z' },
+          { type: 'queue-operation', timestamp: '2026-09-08T10:15:00Z' },
+          { type: 'file-history-delta', timestamp: '2026-09-08T10:20:00Z' },
+          { type: 'system', subtype: 'local_command', timestamp: '2026-09-08T10:25:00Z' },
+        ],
+        tempDir
+      )
+      const now = Date.parse('2026-09-08T10:30:00Z')
+      expect(msSinceLastTurn(path, now)).toBe(30 * 60 * 1000)
+    })
+
+    it('returns null when the transcript holds no real turn at all', async () => {
+      const { msSinceLastTurn } = await importFresh(tempDir)
+      const path = transcriptOf(
+        [{ type: 'system', subtype: 'away_summary', timestamp: '2026-09-08T10:00:00Z' }],
+        tempDir
+      )
+      expect(msSinceLastTurn(path, Date.parse('2026-09-08T10:30:00Z'))).toBeNull()
     })
 
     it('returns null when there is no transcript to read', async () => {

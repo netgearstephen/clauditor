@@ -35,6 +35,30 @@ describe('shouldIdleBank', () => {
     expect(verdict.act).toBe('nothing')
   })
 
+  it('marks a turn landed since arming as retryable, so the timer can wait again', () => {
+    // The clock said fire, the transcript said not yet. That is the one
+    // stand-down that says nothing final about the session: it is still
+    // alive, still large, still unbanked, and will go quiet later. The timer
+    // pushes its fire time out on this flag rather than deleting itself.
+    expect(shouldIdleBank({ ...eligible, msSinceLastTurn: 60_000 })).toEqual({
+      act: 'nothing',
+      reason: 'a turn landed since arming',
+      retry: true,
+    })
+  })
+
+  it('leaves every genuinely final stand-down unmarked', () => {
+    // Deleting the timer is right for these: a session that has banked,
+    // has rotation off, or is too small to be worth banking will not become
+    // eligible by being waited on.
+    expect(shouldIdleBank({ ...eligible, msSinceLastTurn: null }).retry).toBeUndefined()
+    expect(shouldIdleBank({ ...eligible, rotationEnabled: false }).retry).toBeUndefined()
+    expect(shouldIdleBank({ ...eligible, peakContext: 64_999 }).retry).toBeUndefined()
+    expect(
+      shouldIdleBank({ ...eligible, alreadyBanked: true, growthSinceBank: 40_000 }).retry
+    ).toBeUndefined()
+  })
+
   it('does nothing when the transcript cannot be read', () => {
     expect(shouldIdleBank({ ...eligible, msSinceLastTurn: null }).act).toBe('nothing')
   })

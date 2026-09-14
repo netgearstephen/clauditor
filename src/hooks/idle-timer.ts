@@ -19,6 +19,8 @@ import {
   sendToInbox,
   shouldIdleBank,
   socketStillOurs,
+  writeTimerFile,
+  IDLE_BANK_DELAY_MS,
   type IdleBankFacts,
   type IdleTimerFile,
 } from '../features/idle-watchdog.js'
@@ -164,6 +166,22 @@ export async function runIdleTimerOnce(
     })
     deleteTimerFile(sessionId)
     return 'notify'
+  }
+
+  // A turn landed since arming, so the clock was wrong, not the session.
+  // firesAt used to be fixed at armedAt + 55 minutes, which meant this path
+  // deleted the file and exited: one check per session, ever, after which an
+  // idle session had no timer and no poller at all. Re-derive from the last
+  // real turn and keep waiting instead.
+  //
+  // No cap on the re-derivation. The poller cannot outlive what it watches:
+  // socketStillOurs is checked at the top of every pass and deletes the file
+  // the moment the session's socket goes, so a session that never falls quiet
+  // costs one stat a minute until it exits, and nothing after.
+  if (verdict.retry && facts.msSinceLastTurn !== null) {
+    const firesAt = now - facts.msSinceLastTurn + IDLE_BANK_DELAY_MS
+    writeTimerFile({ ...file, firesAt })
+    return 'waiting'
   }
 
   await logActivity({

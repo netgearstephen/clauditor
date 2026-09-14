@@ -100,6 +100,49 @@ describe('the idle timer', () => {
     server.close()
   })
 
+  it('pushes the fire time out to the last real turn instead of deleting itself', async () => {
+    // The whole of Stephen's symptom: firesAt was fixed at armedAt + 55min,
+    // so the one check that followed found a turn had landed, logged it,
+    // deleted the timer file and exited. One check per session, ever, after
+    // which an idle session had no timer and no poller at all.
+    const { timer, w, server } = await arm({
+      transcriptPath: transcript(tempDir, 5 * 60 * 1000, 300_000),
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('waiting')
+    server.close()
+    const file = w.readTimerFile('idle-1')
+    expect(file).not.toBeNull()
+    // Re-derived from the last real turn, not from armedAt: five minutes of
+    // idle so far, so fifty still to go.
+    expect(file!.firesAt - Date.now()).toBeGreaterThan(49 * 60 * 1000)
+    expect(file!.firesAt - Date.now()).toBeLessThanOrEqual(50 * 60 * 1000)
+  })
+
+  it('keeps the poller alive across a push-out, so the session is still watched', async () => {
+    // 'waiting' is what main() loops on. 'nothing' is what ends it.
+    const { timer, w, server } = await arm({
+      transcriptPath: transcript(tempDir, 60_000, 300_000),
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('waiting')
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('waiting')
+    server.close()
+    expect(w.readTimerFile('idle-1')).not.toBeNull()
+  })
+
+  it('deletes the timer on a stand-down that waiting cannot change', async () => {
+    // Rotation off will not become rotation on by being waited on, and a
+    // poller that outlives its purpose is a poller nobody swept.
+    const { timer, w, server } = await arm()
+    const cfg = await import('../config.js')
+    cfg.writeConfig({
+      rotation: { enabled: false, minPeakContext: 200_000, reBankGrowth: 50_000, blockAfterBank: true },
+      notifications: { desktop: true },
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('nothing')
+    server.close()
+    expect(w.readTimerFile('idle-1')).toBeNull()
+  })
+
   it('sends the bank request the Stop hook would have sent', async () => {
     const { timer, server, received } = await arm()
     expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
@@ -229,10 +272,11 @@ describe('the idle timer', () => {
   })
 
   it('does not send anything to a session that has taken a turn since arming', async () => {
+    // 'waiting', not 'nothing': the firing is cancelled but the watch is not.
     const { timer, server, received } = await arm({
       transcriptPath: transcript(tempDir, 60_000, 300_000),
     })
-    expect(await timer.runIdleTimerOnce('idle-1')).toBe('nothing')
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('waiting')
     server.close()
     expect(received).toEqual([])
   })

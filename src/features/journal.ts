@@ -485,6 +485,17 @@ export function cwdFromTranscript(transcriptPath: string): string | null {
  *
  * The prompt cache is kept alive by use: each turn refreshes the TTL on the
  * prefix it reads. So the age of the last turn is the age of the cache.
+ *
+ * Only user and assistant records count. Claude Code keeps writing
+ * timestamped records after a turn ends (stop_hook_summary and turn_duration
+ * at once, away_summary a few minutes later when the user walks away, plus
+ * attachment, queue-operation and file-history-delta), and none of them
+ * touches the model or refreshes a cache. Counting them made the idle
+ * watchdog's clock reset on the very event it exists to detect: measured at
+ * 183.2s of false youth on one live timer, 84.3s on another, and 8 of 11
+ * recent transcripts ended on an away_summary. An allowlist rather than a
+ * denylist, because the bookkeeping types outnumber the turns and are not a
+ * closed set.
  */
 export function msSinceLastTurn(
   transcriptPath: string | null,
@@ -503,6 +514,7 @@ export function msSinceLastTurn(
     if (!line) continue
     try {
       const r = JSON.parse(line)
+      if (r.type !== 'user' && r.type !== 'assistant') continue
       if (!r.timestamp) continue
       const t = Date.parse(r.timestamp)
       if (Number.isNaN(t)) continue
