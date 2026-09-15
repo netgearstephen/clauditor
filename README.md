@@ -1,276 +1,148 @@
 <p align="center">
   <h1 align="center">clauditor</h1>
   <p align="center">
-    <strong>Stop Claude Code from burning through your quota in 20 minutes.</strong>
+    <strong>Bank a handoff while the cache is warm. Never interrupt the user.</strong>
   </p>
   <p align="center">
-    <a href="https://www.npmjs.com/package/@iyadhk/clauditor"><img src="https://img.shields.io/npm/v/@iyadhk/clauditor" alt="npm version"></a>
-    <a href="https://github.com/IyadhKhalfallah/clauditor/actions"><img src="https://img.shields.io/github/actions/workflow/status/IyadhKhalfallah/clauditor/ci.yml?branch=main" alt="CI"></a>
-    <a href="https://github.com/IyadhKhalfallah/clauditor/blob/main/LICENSE"><img src="https://img.shields.io/github/license/IyadhKhalfallah/clauditor" alt="MIT License"></a>
+    <a href="https://github.com/netgearstephen/clauditor/blob/main/LICENSE"><img src="https://img.shields.io/github/license/netgearstephen/clauditor" alt="MIT License"></a>
   </p>
 </p>
 
 ---
 
+This is a fork of [IyadhKhalfallah/clauditor](https://github.com/IyadhKhalfallah/clauditor). Upstream blocks a session when its waste factor gets too high and makes the user type "continue" to get their context back. This fork removes every path that interrupts the user and replaces them with one mechanism: a handoff banked by the model itself, once, at the moment it is cheapest to write.
+
+The rest of upstream is intact: cost tracking, cache-health diagnostics, the error index, the hub, the dashboard and the reports.
+
 ## The problem
 
-Every turn in a Claude Code session re-sends your entire conversation history to the API. A fresh session sends ~20k tokens per turn. A 200-turn session sends ~200k per turn. **Same work, 10x more quota.**
+Every turn of a Claude Code session re-reads the whole conversation. With prompt caching that is cheap, at 0.1x the base input rate, as long as the cache is warm. Once it goes cold (an hour of idleness on the 1-hour TTL), the next turn rewrites the whole context at 2x.
+
+So the same handoff document costs about twenty times more to write from a cold session than from a warm one. Upstream's answer was to block the session before it got big. That interrupts the user at the moment they have decided what to say, and it fired on a waste factor that turned out to be wrong: measured over 207 local sessions, the median session being called 3.1x wasteful was actually costing 0.91x its opening rate once each token class was priced at its real rate.
+
+## What this fork does instead
+
+**Nothing blocks the user.** The Stop hook is the single interruption point, and it interrupts the model, not the user, in exactly two cases:
+
+1. **Bank once, warm.** When a session's peak context crosses the banking gate (200k by default) and the cache is still warm, the Stop hook asks the model to write the judgement half of a handoff to `~/.claude/handoffs/<slug>-<timestamp>.md` and reply with a paste-ready prompt. It costs one model turn at read-back rates, and the session carries on afterwards.
+
+2. **Re-bank on drift.** If the session then grows by another 50k of peak context, the same file is overwritten so that a prompt already pasted from it keeps working.
 
 ```
-Turn    1: ██ 20k tokens
-Turn   50: ██████████ 100k tokens
-Turn  200: ████████████████████ 200k tokens
-Turn  500: ██████████████████████████████████████████ 400k tokens
+clauditor: this session peaked at 214,000 context tokens. The prompt cache is
+still warm, which makes this the cheapest moment in the session to write a
+handoff ...
+
+Banking one now, so it is ready if and when you rotate. Nothing is being
+blocked and the session continues normally after this.
 ```
 
-This is why your session limit gets hit in 20 minutes. Not because of a bug — because sessions grow linearly and nobody tells you to start fresh.
-
-## The solution
-
-clauditor monitors your session size and **blocks Claude when you're wasting quota**, saving your progress so you can start fresh without losing context.
+The model replies with the resume prompt and nothing else:
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  clauditor: Session using 9x more quota than necessary      ║
-╚══════════════════════════════════════════════════════════════╝
-
-This session is burning 9x more quota per turn (170k vs ~20k tokens/turn).
-Your progress has been saved and won't be lost.
-
-Run `claude` to start a fresh session at ~20k tokens/turn instead of 170k.
-In the new session, just say "continue where I left off".
+Continue a paused task. Read `/Users/you/.claude/handoffs/wire-clauditor-into-handoff-20260910-1642.md`
+in full before doing anything else. Then summarise your understanding back to me in
+3 to 5 bullets and confirm the very next step. ...
 ```
 
-When you type "continue" in the new session, clauditor shows your saved sessions and tells you exactly what to type:
+**Idle sessions are woken to bank.** A session left open and idle would lose its cache without ever banking. The Stop hook arms a detached one-shot timer per session; at 55 minutes of idleness it wakes the session over its own inbox socket and asks it to bank, while the cache is still warm. A woken bank never arms the wind-down guard, so a session you come back to is still working normally. If the socket has gone or the cache is already cold, it notifies instead and spends nothing.
+
+**Resuming costs no model turn.** When a new session starts in a project with a banked handoff, SessionStart shows the resume prompt to the *user* as a system message. The model never reads the handoff until you paste the prompt, so the advisory itself is free:
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  clauditor: 2 recent sessions found                        ║
-╚══════════════════════════════════════════════════════════════╝
+[clauditor]: Your session peaked at 214k tokens 3h ago. The cache is now cold,
+so resuming the conversation will cost ~214k tokens plus the token cost of your
+message.
 
-  1. (5m ago) Notion backfill — populating database with User Email
-     → read ~/.clauditor/sessions/.../1234.md and continue where I left off
+Your conversation created a handoff while the cache was still warm. You can
+save ~184k tokens ($1.03) while still passing along the context by pasting this
+prompt into a new session:
 
-  2. (30m ago) feat/variable-agent — migrating from ResponsesApi
-     → read ~/.clauditor/sessions/.../5678.md and continue where I left off
-
-Copy one of the → lines above, or type something else to start fresh.
+Continue a paused task. Read `...` in full before doing anything else. ...
 ```
+
+The advisory is offered once per handoff, not to every session for a week.
+
+## The two-mode summary
+
+A session gets ONE summary, produced one of two ways:
+
+| Mode | Source | Cost | When |
+|---|---|---|---|
+| **Mechanical** | `handoff-facts.py` over git and the transcript: files touched, commits, verification command | Free, deterministic | Rewritten whenever the session moves, and before every compaction |
+| **Augmented** | The mechanical half plus judgement only the model has: decisions and why, dead ends, gotchas, do-not-touch | One model turn, warm | Banked once past the gate, re-banked on drift |
+
+They cannot drift: the augmented document *is* the mechanical one with judgement spliced in, and both call the same facts script. The model is told exactly which sections not to write, because a model asked for "a handoff" will reconstruct a file list from the transcript and that is where paths and SHAs go wrong.
+
+A compaction summary counts as judgement already paid for. If nothing is banked yet when `PostCompact` fires, Claude Code's own summary is banked in its place.
+
+A handoff you write by hand with the `/handoff` skill supersedes the automatic one if it is newer. Exactly one summary is ever offered, never a menu.
+
+> The mechanical half depends on the `/handoff` skill's facts script at `~/.claude/skills/handoff/scripts/handoff-facts.py`. Without it the judgement half still banks, but the assembled document has no mechanical sections.
+
+## The wind-down guard
+
+After a session banks, `PreToolUse` refuses `Edit`, `Write`, `NotebookEdit` and `Task`: any of those would make the banked document describe a session that no longer exists. Bash and reads stay open so the handoff itself can still be updated. Agents already running are unaffected.
+
+Your next message lifts the guard automatically. The hook does not read what you said, only that you said something, so nothing can be triggered by quoting or discussing a phrase. A re-bank request also lifts it for the tools that answer it. Turn it off with `rotation.blockAfterBank: false`.
 
 ## Install
 
+This fork is not published to npm or Homebrew. Build it from source:
+
 ```bash
-brew install IyadhKhalfallah/clauditor/clauditor
+git clone https://github.com/netgearstephen/clauditor.git
+cd clauditor
+npm install
+npm run build
+ln -sf "$PWD/dist/cli.js" ~/.local/bin/clauditor   # or anywhere on your PATH
 clauditor install
 ```
 
-Or via npm:
+If you have the upstream package installed, remove it first (`clauditor uninstall`, then `brew uninstall clauditor` or `npm uninstall -g @iyadhk/clauditor`). Hooks are registered as bare `clauditor hook ...` commands, so the binary must be on the PATH Claude Code's hook shell sees.
 
-```bash
-npm install -g @iyadhk/clauditor
-clauditor install
-```
+After pulling changes, `npm run build` is enough; the symlink picks up the new build.
 
-That's it. Two commands. clauditor registers hooks into Claude Code and runs in the background. No dashboard needed. No config needed.
-
-**Also works with npx** (no global install):
-
-```bash
-npx @iyadhk/clauditor install
-```
-
-Hooks are registered to run via npx automatically.
-
-New hooks are auto-registered on upgrade — no need to re-run `clauditor install`.
-
-Requires Node.js 20+.
+Requires Node.js 20+ and Python 3 for the facts script.
 
 **Supported platforms:** Claude Code CLI, VS Code extension, JetBrains extension. Does **not** work with Claude Code on the web (claude.ai/code).
 
-**Known limitation:** The "continue" prompt block works reliably in the CLI. In the VS Code extension, the `UserPromptSubmit` hook [may not fire consistently](https://github.com/anthropics/claude-code/issues/17277) — context is still injected via `SessionStart` but Claude may not always announce it. This is a Claude Code bug, not a clauditor issue.
-
 ## How it works
 
-clauditor registers 7 hooks into Claude Code:
+`clauditor install` registers 8 hooks into Claude Code. Every handler runs inside a guard that never lets a hook throw: a broken hook must not take the session down with it.
 
-### `UserPromptSubmit` — blocks before tokens are wasted
+| Hook | What it does | Blocks? |
+|---|---|---|
+| `Stop` | Refreshes the mechanical journal, banks the judgement half once past the gate, arms the idle timer, stops compaction loops | The model, to bank |
+| `PreToolUse` | Injects known fixes before Bash commands; enforces the wind-down guard | Work tools after a bank |
+| `PostToolUse` | Compresses verbose Bash output, records error outcomes, injects cache-health warnings | No |
+| `PreCompact` | Forces a journal write before context is discarded | No |
+| `PostCompact` | Banks Claude Code's own compaction summary as judgement if nothing is banked yet | No |
+| `SessionStart` | Shows the resume advisory to the user; promotes the banked handoff into `~/.claude/handoffs/` | No |
+| `SessionEnd` | Kills this session's idle timer and removes its timer file | No |
+| `UserPromptSubmit` | Sets a flag that lifts the wind-down guard. Reads nothing, injects nothing | No |
 
-Before Claude processes your prompt, clauditor checks two things:
+### The idle timer, in detail
 
-1. **Waste factor** — if the session is burning too much quota, it blocks with exit code 2.
-2. **"Continue" detection** — if you type "continue", "resume", "pick up where I left off", etc., it blocks with your saved session choices and copyable prompts.
+The Stop hook resolves its own `claude` PID by walking up the process tree until a `/tmp/cc-socks/<pid>.sock` matches, then writes `~/.clauditor/timers/<sessionId>.json` at mode 0600 with the socket path, messaging token and a `firesAt` 55 minutes out. On the first Stop of a session it spawns a detached poller; on every later Stop it only rewrites `firesAt`. One long-lived poller per session costs a stat per minute, against 42MB and a spawn per turn if it were respawned.
 
-```
-Waste factor = current tokens/turn ÷ baseline tokens/turn
+At fire time the poller re-derives every fact from disk and banks only if all of these hold: the last real turn is still 55 minutes old, peak context is at least 65k, the session has not banked or has grown 50k since, rotation is enabled, the socket exists, and the cache is still warm. Otherwise it notifies and exits.
 
-  1x = efficient (fresh session)
-  5x = growing
- 10x = blocked — start fresh
-```
+Cleanup is three-way: `SessionEnd` on a clean exit, the poller noticing its socket has gone (crash, SIGKILL, closed terminal), and a sweep on every arming that removes files whose timer PID is dead. Cost is bounded by open sessions, never by transcripts on disk.
 
-### `PostToolUse` — blocks during autonomous work
-
-When Claude is working autonomously (editing files, running commands), there's no user prompt to intercept. The PostToolUse hook catches this — after each tool call, it checks the waste factor and blocks if too high.
-
-Uses exit code 2, which Claude Code treats as a blocking error. Claude acknowledges it, writes a handoff summary, and stops.
-
-Also detects: cache degradation, token spikes, resume anomalies, edit thrashing, and **buggy Claude Code versions** (2.1.69-2.1.89 have a known cache bug that burns 10-20x tokens).
-
-### `PreCompact` — saves context before compaction
-
-Fires at the exact moment before Claude Code compacts your context. Saves session state as a fallback in case PostCompact doesn't fire.
-
-### `PostCompact` — captures Claude's summary + mechanical state
-
-Fires after compaction. Merges Claude's own LLM-generated summary with mechanically extracted structured data (files, commits, commands) from the JSONL transcript.
-
-### `SessionStart` — injects previous session context
-
-When you start a new session, clauditor reads saved handoff files for this project and injects them into Claude's context. If multiple sessions exist (last 24h), Claude presents the choice.
-
-### `PreToolUse` — prevents known errors
-
-Before Claude runs a command, clauditor checks the local error index (and optionally the team hub) for previous failures with the same binary. If a known fix exists with sufficient confidence, it injects it as context — non-blocking, so Claude can adapt without being stopped.
-
-```
-[clauditor]: `npm run build` has failed 5 times on this project.
-Last error: Module not found: Cannot resolve @/lib/db
-Known fix: `npx drizzle-kit push && npm run build`
-```
-
-If the command succeeds after the warning, confidence increases. If it fails despite the warning, confidence decreases. The knowledge base self-corrects over time.
-
-### `Stop` — blocks infinite loops
-
-When Claude repeats the same tool call 3+ times with identical input and output, the Stop hook blocks it.
-
-## Real data
-
-From a real user's Claude Code usage over 7 days:
-
-```
-  TURNS  BASE   NOW   WASTE  TOKENS
-  ──────────────────────────────────────────────────────────
-    317   21k  417k  20.1x    73M  ████████████████████
-    576   28k  401k  14.5x   116M  ███████████████
-    172   23k  249k    11x    25M  ███████████
-    164   26k  220k   8.6x    21M  █████████
-    230   28k  218k   7.8x    31M  ████████
-    ...
-  ──────────────────────────────────────────────────────────
-  37 sessions · 418M tokens total
-  15 sessions burned 5x+ more quota than necessary
-
-  clauditor impact
-  With rotation on all sessions: 157M tokens instead of 418M
-  Potential savings: 261M tokens (62% less quota)
-```
-
-## Dashboard (optional)
-
-```bash
-clauditor watch
-```
-
-```
-── clauditor ──  4 sessions + 3 subagents (last 12h)
-
- LAST 7 DAYS
- 37 sessions · 15 burned 5x+ quota
- Worst: api/service (317 turns, 20.1x waste — 21k→417k/turn)
- With rotation: 157M tokens instead of 418M (62% savings)
-
- api-service (feat/variable-agent)  opus-4-6 · 239 turns
-
- Waste factor: 8x  BLOCKED — start a fresh session
- ██████████████████████████████
- Started at 20k/turn → now 153k/turn (8x more quota per turn)
-
- Cache: 98%  Turns: 239  ~$64 API est.
-```
-
-## Peak vs off-peak analysis
-
-```bash
-clauditor time
-```
-
-Shows token costs by hour of day to detect if peak hours burn more quota:
-
-```
-  Token Usage by Hour — last 7 days
-  ──────────────────────────────────────────────────────────
-  10:00    98k/turn   304 turns  cache  92%  ███████████
-  14:00   124k/turn   289 turns  cache  96%  ██████████████
-  18:00   164k/turn   275 turns  cache  98%  ██████████████████
-  ──────────────────────────────────────────────────────────
-  Peak (9am-5pm):    114k avg tokens/turn
-  Off-peak:          154k avg tokens/turn
-```
-
-## All commands
-
-| Command | Description |
-|---|---|
-| `clauditor` | Show quota report (default) |
-| `clauditor install` | Register hooks into Claude Code (one-time) |
-| `clauditor uninstall` | Remove hooks |
-| `clauditor watch` | Live dashboard showing waste factor |
-| `clauditor report` | Quota usage report with waste bars |
-| `clauditor share` | Copy-pasteable summary for social media |
-| `clauditor time` | Token usage by hour of day (peak vs off-peak) |
-| `clauditor sessions` | See where your tokens went |
-| `clauditor status` | Quick health check (no TUI) |
-| `clauditor impact` | Lifetime stats |
-| `clauditor activity` | Recent actions log |
-| `clauditor stats` | Historical usage analysis |
-| `clauditor doctor` | Scan for cache bugs |
-| `clauditor calibrate` | Auto-calibrate rotation threshold |
-| `clauditor suggest-skill` | Find repeating workflows |
-| `clauditor knowledge` | Show accumulated errors and file activity |
-| `clauditor handoff-report` | Measure information preservation of last session handoff |
-| `clauditor login` | Sign in to clauditor hub (opens browser, or `--device` for SSH) |
-
-## Audit-only mode (no hooks)
-
-Don't want clauditor to block or modify your sessions? Skip `clauditor install` and use it as a read-only analytics tool:
-
-```bash
-brew install IyadhKhalfallah/clauditor/clauditor
-# or: npm install -g @iyadhk/clauditor
-clauditor report      # see waste across all sessions
-clauditor time        # peak vs off-peak token analysis
-clauditor sessions    # per-session breakdown
-clauditor doctor      # scan for cache bugs
-clauditor share       # copy-pasteable summary
-```
-
-These commands read your session JSONL files directly. No hooks registered, no session modifications, no side effects.
-
-## Works alongside other tools
-
-clauditor operates at the **session boundary** layer — it monitors waste and rotates sessions. Other tools work at different layers and are fully compatible:
-
-| Tool | Layer | What it does | Conflicts? |
-|---|---|---|---|
-| [Headroom](https://github.com/chopratejas/headroom) | API proxy | Compresses tool output tokens (~34% savings per turn) | No — works at HTTP level |
-| [MemStack](https://github.com/cwinvestments/memstack) | Persistent memory | SQLite + vector DB for cross-session knowledge | No — uses skills + rules |
-| [Claude Workspace Optimizer](https://oakenai.tech/tools/claude-workspace-optimizer) | Static workspace | Audits CLAUDE.md and memory files for bloat | No — runs before sessions |
-| [GrapeRoot](https://github.com/nicobailon/graperoot) | Per-turn context | Builds code graph, pre-loads relevant files | No — complementary |
-| [Hippo Memory](https://github.com/kitfunso/hippo-memory) | Persistent memory | Neuroscience-inspired memory with decay | No — different approach |
-
-You can run all of them together. clauditor handles when to rotate; the others optimize what happens within a session.
+The full design, with the measurements behind each threshold, is in [`docs/superpowers/specs/2026-09-10-idle-bank-watchdog-design.md`](docs/superpowers/specs/2026-09-10-idle-bank-watchdog-design.md).
 
 ## Configuration
 
-Everything works out of the box. One config file at `~/.clauditor/config.json`:
+One config file at `~/.clauditor/config.json`, created on `clauditor install`:
 
 ```json
 {
   "rotation": {
     "enabled": true,
-    "threshold": 100000,
-    "minTurns": 30
+    "minPeakContext": 200000,
+    "reBankGrowth": 50000,
+    "blockAfterBank": true
   },
   "notifications": {
     "desktop": true
@@ -280,191 +152,159 @@ Everything works out of the box. One config file at `~/.clauditor/config.json`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `rotation.enabled` | `true` | Enable/disable session rotation |
-| `rotation.threshold` | `100000` | Tokens/turn average to trigger block |
-| `rotation.minTurns` | `30` | Minimum turns before blocking |
-| `notifications.desktop` | `true` | Desktop notifications for cache issues |
+| `rotation.enabled` | `true` | Bank handoffs and arm idle timers at all |
+| `rotation.minPeakContext` | `200000` | Peak context a session must reach before the judgement half is banked. Over 1,476 sessions and 87 handoffs this is where the margin between required and observed reuse rate is widest |
+| `rotation.reBankGrowth` | `50000` | Peak-context growth since the last bank that earns a rewrite. Refreshes 65% of banking sessions, against 34% at 100k |
+| `rotation.blockAfterBank` | `true` | Enforce the wind-down guard after a bank |
+| `notifications.desktop` | `true` | Desktop notifications for cache issues and idle-timer outcomes |
 
-Created automatically on `clauditor install`. Edit to customize.
+The idle timer's 55-minute delay and 65k arming floor are constants, not config: they are derived from the cache TTL and the measured entry cost of a handoff, and there is nothing to tune until that research changes.
 
-## How it saves context
+## Cost tracking
 
-clauditor combines two methods to maximize information preservation during session rotation.
+The fork corrects several pricing holes that made upstream's figures unreliable:
 
-### Structured handoff template
+- Cache writes are billed at their actual TTL rate. The 5m/1h split is carried through from the raw record, and any unattributed remainder is billed at the 1h rate rather than zero.
+- Each session is priced with its own model, then summed. Costing the aggregate once repriced every session as whatever the fallback was.
+- Non-Anthropic models (Ollama, Claude Code's `<synthetic>` marker) cost zero. Unrecognised `claude-*` IDs still take the loud most-expensive fallback.
+- Current model IDs and rates are in the table; stale ones are corrected.
 
-When clauditor blocks a session for rotation, it tells Claude to write its handoff in a structured format:
+On a two-day sample the reported spend went from $217.81 to $425.86 after these fixes.
 
-```
-TASK: (what you were working on)
-COMPLETED: (what's done)
-IN_PROGRESS: (what's partially done, with file paths)
-FAILED_APPROACHES: (what was tried and didn't work, and WHY)
-DEPENDENCIES: (things that must happen in order)
-DECISIONS: (choices made and why)
-USER_PREFERENCES: (what the user asked for or rejected)
-BLOCKERS: (unresolved issues)
-```
+`clauditor doctor` judges cache health over the trailing five turns, weighted by volume, and reports `unknown` below eight turns. Upstream took its verdict from the final turn alone, so one large read or a compaction marked a healthy session degraded.
 
-This captures what only Claude knows — reasoning, rejected approaches, conditionals — in a parseable format. The parser detects structured output (2+ section headers) and falls back to prose if Claude doesn't follow the template.
-
-### Mechanical extraction
-
-Every handoff also includes structured data extracted mechanically from the JSONL transcript:
-
-- Files modified and read
-- Git commits (verbatim messages)
-- Key commands and results (builds, tests, deploys)
-- Recent user messages
-
-This data is deterministic — no LLM interpretation, no paraphrasing, no loss.
-
-### Why both?
-
-Research shows LLM-generated summaries suffer from knowledge overwriting and semantic drift ([Size-Fidelity Paradox](https://arxiv.org/abs/2602.09789)). Mechanical extraction preserves files and commits deterministically. Claude's prose captures reasoning the transcript can't. Together they give the next session the best possible starting point.
+## Dashboard (optional)
 
 ```bash
-clauditor handoff-report   # see what your last handoff contains
+clauditor watch
 ```
 
+Shows each open session's peak context against the banking gate, and whether its handoff has been banked. It says plainly that nothing blocks.
+
+## All commands
+
+| Command | Description |
+|---|---|
+| `clauditor` | Quota report (default) |
+| `clauditor install` | Register hooks into Claude Code, write default config, install the `/save-skill` skill |
+| `clauditor uninstall` | Remove hooks |
+| `clauditor watch` | Live dashboard: peak context vs the banking gate |
+| `clauditor report` | Per-session token report with cost-weighted growth bars |
+| `clauditor share` | Copy-pasteable summary |
+| `clauditor time` | Token usage by hour of day |
+| `clauditor sessions` | See where your tokens went |
+| `clauditor status` | Quick health check (no TUI) |
+| `clauditor impact` | Lifetime stats |
+| `clauditor activity` | Recent actions log, including every idle-timer attempt |
+| `clauditor stats` | Historical usage analysis, priced per model |
+| `clauditor doctor` | Scan for cache degradation and buggy Claude Code versions |
+| `clauditor suggest-skill` | Find repeating workflows |
+| `clauditor knowledge` | Show accumulated errors and file activity |
+| `clauditor handoff-report` | Measure how much of the transcript the current project summary preserves |
+| `clauditor login` | Sign in to clauditor hub (opens browser, or `--device` for SSH) |
+
+The waste factor shown by `report` and `share` is cost-weighted (each token class at its real rate) and is a diagnostic only. Nothing acts on it.
+
+## Audit-only mode (no hooks)
+
+Skip `clauditor install` and use it as a read-only analytics tool:
+
+```bash
+clauditor report      # per-session breakdown
+clauditor time        # peak vs off-peak token analysis
+clauditor sessions    # where the tokens went
+clauditor doctor      # cache health
 ```
-  Structural Coverage
-  ────────────────────────────────────────────────────
 
-  Score:  73% (11/15 structural items in handoff)
-
-  Files modified         2/4  ██████████░░░░░░░░░░
-  Commits                2/2  ████████████████████
-  Files read             3/5  ████████████░░░░░░░░
-  Commands               2/2  ████████████████████
-```
-
-### Per-session storage
-
-Each handoff is saved as a separate timestamped file:
-
-```
-~/.clauditor/sessions/<encoded-project-path>/<timestamp>.md
-```
-
-Multiple sessions in the same project don't overwrite each other. Files older than 24h are cleaned up automatically.
-
-### Session resume flow
-
-1. clauditor blocks your session (or `/compact` fires)
-2. Context is saved — structured template + mechanical data
-3. You open a new session and type "continue"
-4. clauditor blocks with your saved sessions and copyable prompts
-5. You paste the prompt — Claude reads the file and picks up where you left off
+These commands read your session JSONL files directly. No hooks registered, no side effects.
 
 ## Project memory
 
 clauditor learns from your sessions and builds per-project knowledge at `~/.clauditor/knowledge/<project>/`.
 
-**Error index with confidence decay** — Records failed commands and their fixes. Each error has a confidence score (0–1) that decays with a 45-day half-life. Recent errors rank above old ones. Stale errors fade naturally instead of accumulating forever.
+**Error index with confidence decay.** Records failed commands and their fixes. Each error has a confidence score (0–1) that decays with a 45-day half-life. Typo commands, transient network errors and tiny error messages are filtered at capture time.
 
-```
-  npm run build          conf=0.85  (confirmed, 5x)
-  npx drizzle-kit push   conf=0.30  (inferred, 1x)
-```
+**Implicit outcome tracking.** When `PreToolUse` warns about a command and `PostToolUse` sees the result, confidence adjusts automatically: +0.1 on success, -0.15 on failure despite the warning.
 
-**Noise filtering** — Typo commands (`command not found`), transient network errors (`ETIMEDOUT`), and tiny error messages are filtered at capture time. Keeps the error index clean from day one.
+**Confidence tiers.** Errors are labeled `confirmed` (0.7+), `observed` (0.4+), `inferred` (0.2+) or `stale` (<0.2), and Claude sees the tier in the injection.
 
-**Implicit outcome tracking** — When `PreToolUse` warns about a command and `PostToolUse` sees the result, confidence adjusts automatically. Command succeeded after warning? +0.1. Failed despite warning? -0.15. Self-correcting, zero effort.
-
-**Confidence tiers** — Errors are labeled `confirmed` (0.7+), `observed` (0.4+), `inferred` (0.2+), or `stale` (<0.2). Claude sees the tier in the injection, so it knows how much to trust each entry.
-
-**File tracker** — Tracks edit/read counts across sessions. Identifies "hot files" (5+ edits across 3+ sessions) and injects context when Claude touches them, so it knows the file's history.
+**File tracker.** Tracks edit and read counts across sessions and injects history when Claude touches a hot file (5+ edits across 3+ sessions).
 
 ```bash
-clauditor knowledge   # see accumulated errors and file activity
+clauditor knowledge
 ```
 
 ## Team knowledge sync (optional, beta)
 
-For teams, clauditor can optionally connect to a hub for shared knowledge:
-
 ```bash
-clauditor login
+clauditor login            # opens a browser
+clauditor login --device   # SSH or headless
 ```
 
-Opens your browser to sign in. For SSH or headless environments:
-
-```bash
-clauditor login --device
-
-  Visit: https://www.clauditor.ai/device
-  Enter code: XPFN-8442
-```
-
-When connected:
-- **PreToolUse** queries the hub before Bash commands — team errors and fixes are shared
-- **PostToolUse** pushes error fragments to the hub and queries for file context
-- **SessionStart** pulls a compact team knowledge brief
-
-Knowledge starts as developer-scoped and auto-promotes to team-scoped when multiple developers report the same issue. No hub required for solo use — all local features work independently.
-
-## Cross-project session handoffs
-
-Session handoffs work across projects. If you save a session in project A and open project B, clauditor finds it. Cross-project sessions show `[project-name]` labels so you know where they came from.
+When connected, `PreToolUse` queries the hub before Bash commands, `PostToolUse` pushes error fragments, and `SessionStart` pulls a compact team brief. `clauditor sync` pushes the current project summary as a team memory, deduplicated by content hash. Knowledge starts developer-scoped and promotes to team scope when several developers report the same issue. No hub is required for solo use.
 
 ## Version-aware warnings
 
-clauditor detects if your sessions ran on Claude Code versions 2.1.69-2.1.89, which have a [confirmed prompt caching bug](https://github.com/anthropics/claude-code/issues/34629) that causes 10-20x token consumption. The warning appears in `clauditor report` and via real-time hooks.
+clauditor detects sessions run on Claude Code 2.1.69–2.1.89, which have a [confirmed prompt caching bug](https://github.com/anthropics/claude-code/issues/34629) that causes 10–20x token consumption. The warning appears in `clauditor report` and via the hooks.
 
 ## Technical details
-
-**Why sessions get expensive:**
-
-Every Claude Code API call sends: `tools` → `system prompt` → `CLAUDE.md` → `conversation history`. The conversation history grows linearly. Cache makes the prefix cheap (cache_read), but the growing tail requires cache_create each turn.
-
-```
-API call = tools (cached) + system (cached) + history (grows every turn)
-```
-
-After 200 turns, the history alone can be 200k+ tokens. A fresh session resets this to near zero.
 
 **What clauditor monitors:**
 
 | Metric | Source | Formula |
 |---|---|---|
-| Tokens/turn | JSONL `usage` field | `input + output + cache_read + cache_create` |
-| Baseline | First 5 turns of session | Average tokens/turn |
-| Current | Last 5 turns of session | Average tokens/turn |
-| Waste factor | Derived | `current ÷ baseline` |
-| Cache ratio | JSONL `usage` field | `cache_read ÷ (input + cache_read + cache_create)` |
+| Context tokens | JSONL `usage` field | `input + cache_read + cache_create` (output excluded: it is not context) |
+| Peak context | Derived | Max context tokens over the session's turns. Peak rather than current, because a compaction drops the current figure while the cold rewrite a handoff avoids is still priced on the high-water mark |
+| Effective turn cost | Derived | Each token class at its own rate, cache writes at their TTL rate |
+| Cache ratio | JSONL `usage` field | `cache_read ÷ (input + cache_read + cache_create)`, aggregated over the trailing 5 turns |
 
 **Hook communication:**
 
 | Hook | Mechanism | Why |
 |---|---|---|
-| `UserPromptSubmit` | Exit code 2 + stderr | Hard block — stops prompt, shows message |
-| `PostToolUse` | Exit code 2 + stderr | Blocking error — Claude acknowledges and stops |
-| `PreToolUse` | `additionalContext` | Injects known error fixes before commands |
-| `PreCompact` | File write | Saves fallback state at compaction moment |
-| `PostCompact` | File write | Captures Claude's own LLM summary |
-| `SessionStart` | `additionalContext` | Injects previous session state |
-| `Stop` | `decision: "block"` | Prevents infinite loops |
+| `Stop` | `decision: "block"` + reason | Asks the model to bank, or stops a loop |
+| `PreToolUse` | `additionalContext` / `decision: "block"` | Known fixes; the wind-down guard |
+| `PostToolUse` | `additionalContext` | Cache-health warnings, error guidance |
+| `PreCompact` | File write | Journal refresh at the compaction boundary |
+| `PostCompact` | File write | Banks Claude Code's own summary |
+| `SessionStart` | `systemMessage` | Resume advisory to the user, not the model |
+| `SessionEnd` | File delete + kill | Stops the idle timer |
+| `UserPromptSubmit` | File write | Lifts the wind-down guard |
+| Idle timer | Unix socket, auth frame first | Wakes an idle session to bank |
+
+**Where things live:**
+
+| Path | What |
+|---|---|
+| `~/.claude/handoffs/<slug>-<stamp>.md` | Banked and hand-written handoffs, the files the paste prompt names |
+| `~/.clauditor/journals/<encoded-cwd>/` | Mechanical journal, journal state, pending judgement |
+| `~/.clauditor/banked/<sessionId>.json` | Per-session bank marker: what was banked, at what peak, and whether the guard is lifted |
+| `~/.clauditor/timers/<sessionId>.json` | Armed idle timer (0600, deleted on fire or replace) |
+| `~/.clauditor/knowledge/<project>/` | Error index and file tracker |
+| `~/.clauditor/config.json` | Config |
 
 ## Limitations
 
-- **Cannot reduce Claude Code's context assembly.** We observe and advise — we don't modify what Claude Code sends to the API.
-- **Cannot see quota.** Anthropic doesn't expose quota data. The waste factor is a proxy based on token growth.
-- **Cache reads may or may not count toward quota.** The exact quota accounting for Max plan subscribers is not published.
+- **Cannot reduce Claude Code's context assembly.** clauditor observes and advises; it does not modify what Claude Code sends to the API.
+- **Cannot see quota.** Anthropic does not expose quota data. Token and cost figures are derived from the local JSONL.
+- **The cache TTL is a stand-in.** `CACHE_TTL_MS` is 60 minutes because these sessions run on the 1-hour cache. Claude Code hands statusline scripts a real `prompt_cache.expires_at`; whether hook payloads carry it is unconfirmed.
+- **A laptop that sleeps before the idle window loses the cache anyway.** The TTL is server-side wall-clock, so sleeping does not pause it.
+- **A held socket message is invisible from outside.** If a session holds the woken bank request for an approval nobody is present to give, nothing happens. Every attempt is written to the activity log so the silence is auditable.
+- **The messaging token is copied to disk** for the idle timer, at mode 0600 and deleted once the timer fires or is replaced. It is a longer-lived copy of a live secret than exists upstream.
 - **Web sessions not supported.** Only CLI and IDE extensions write local JSONL files.
-- **Per-device only.** Sessions don't sync across machines.
-- **VS Code UserPromptSubmit limitation.** The "continue" prompt block works in CLI but [may not fire in VS Code](https://github.com/anthropics/claude-code/issues/17277). Context is still injected via SessionStart.
+- **Per-device only.** Sessions do not sync across machines.
 
 ## Development
 
 ```bash
-git clone https://github.com/IyadhKhalfallah/clauditor.git
+git clone https://github.com/netgearstephen/clauditor.git
 cd clauditor
 npm install
-npm test        # 275 tests
+npm test        # 571 tests
 npm run build
-npm link        # makes `clauditor` available globally
 ```
+
+Tests never touch the real home directory and never wake a real session; `vitest.setup.ts` redirects `HOME` to a temp directory.
 
 ## Legal
 
