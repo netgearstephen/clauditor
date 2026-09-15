@@ -1,18 +1,19 @@
 import { logActivity } from '../features/activity-log.js'
-import { saveSessionState, extractSessionStateFromTranscript } from '../features/session-state.js'
-import { readStdin, outputDecision, findTranscriptPathSync } from './shared.js'
+import { readTurns, writeJournal } from '../features/journal.js'
+import { readStdin, outputDecision, findTranscriptPathSync, isHookEntry } from './shared.js'
 
 /**
  * PreCompact hook — fires right before Claude Code compacts the context.
  *
- * This is the PERFECT moment to save session state:
- * - Compaction is about to erase older context
- * - We save to ~/.clauditor/last-session.md (not CLAUDE.md)
- * - The SessionStart hook injects this into the next session
+ * Compaction is about to discard older context, so the mechanical journal is
+ * refreshed here whether or not it looks stale. Everything the journal reports
+ * comes from git and the transcript rather than from the context window, so
+ * nothing is actually lost by compaction, but this is free and the alternative
+ * is a journal whose last write predates a boundary the user can see.
  */
 export async function handlePreCompactHook(): Promise<void> {
   const input = await readStdin()
-  let hookInput: { session_id: string; transcript_path?: string }
+  let hookInput: { session_id: string; transcript_path?: string; cwd?: string }
 
   try {
     hookInput = JSON.parse(input)
@@ -29,13 +30,12 @@ export async function handlePreCompactHook(): Promise<void> {
       return
     }
 
-    const stateData = extractSessionStateFromTranscript(sessionId, transcriptPath)
-    if (stateData) {
-      saveSessionState(stateData)
+    const { turns } = readTurns(transcriptPath)
+    if (writeJournal(sessionId, hookInput.cwd || null, turns.length, { force: true })) {
       logActivity({
         type: 'context_warning',
         session: sessionId.slice(0, 8),
-        message: `PreCompact: saved ${stateData.turns}-turn session state before compaction`,
+        message: 'PreCompact: refreshed the mechanical journal before compaction',
       }).catch(() => {})
     }
   } catch {
@@ -45,8 +45,11 @@ export async function handlePreCompactHook(): Promise<void> {
   outputDecision({})
 }
 
-handlePreCompactHook().catch((err) => {
-  process.stderr.write(`clauditor pre-compact hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('pre-compact')) {
+  handlePreCompactHook().catch((err) => {
+    process.stderr.write(`clauditor pre-compact hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

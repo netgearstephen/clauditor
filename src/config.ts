@@ -18,8 +18,36 @@ export interface ProjectHubConfig {
 export interface ClauditorUserConfig {
   rotation: {
     enabled: boolean
-    threshold: number
-    minTurns: number
+    /**
+     * Peak context tokens a session must reach before the judgement half is
+     * banked. 200k is where the measured margin is widest: over 1,476 sessions
+     * and 87 handoffs the required reuse rate is 8.0% against 17.6% observed,
+     * while at 100k it is 9.1% against 10.2%.
+     */
+    minPeakContext: number
+    /**
+     * Peak-context growth since the last bank that makes the banked judgement
+     * stale enough to be worth rewriting.
+     *
+     * A bank describes the session as it stood; work carries on immediately
+     * afterwards, so the document is out of date from the moment it is
+     * written.
+     *
+     * 50k, because 100k was above the drift it was meant to catch. Of the 321
+     * sessions that cross the 200k gate, the median grows 72k more before it
+     * ends, so at 100k the median banking session never refreshed at all and
+     * the document it left behind was missing a third of the session's turns.
+     * 50k refreshes 65% of them against 34% at 100k. The extra turn costs
+     * about 0.2 x C + 37,000 units warm, which is the cheapest write in the
+     * rotation and the only one that buys the document back from being stale.
+     */
+    reBankGrowth: number
+    /**
+     * After a session banks, refuse the tool calls that would make the banked
+     * handoff stale. Agents already running are unaffected; Bash and reads
+     * stay open so the handoff itself can still be updated.
+     */
+    blockAfterBank: boolean
   }
   notifications: {
     desktop: boolean
@@ -31,8 +59,9 @@ export interface ClauditorUserConfig {
 const DEFAULTS: ClauditorUserConfig = {
   rotation: {
     enabled: true,
-    threshold: 100_000,
-    minTurns: 30,
+    minPeakContext: 200_000,
+    reBankGrowth: 50_000,
+    blockAfterBank: true,
   },
   notifications: {
     desktop: true,

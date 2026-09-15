@@ -1,6 +1,6 @@
 import { logActivity } from '../features/activity-log.js'
-import { savePostCompactSummary, parseStructuredHandoff } from '../features/session-state.js'
-import { readStdin, outputDecision } from './shared.js'
+import { parseStructuredHandoff } from '../features/session-state.js'
+import { readStdin, outputDecision, isHookEntry } from './shared.js'
 
 /**
  * PostCompact hook handler.
@@ -10,7 +10,8 @@ import { readStdin, outputDecision } from './shared.js'
  * had full context. This is dramatically better than mechanical JSONL extraction
  * because the LLM knows the reasoning, blockers, and plan.
  *
- * Saves per-session to ~/.clauditor/sessions/<encoded-cwd>/<timestamp>.md
+ * Banks the summary as the judgement half of a handoff, if nothing is banked
+ * yet, and refreshes the mechanical journal across the compaction boundary.
  * Also pushes structured learnings to the hub (if any found in the summary).
  */
 export async function handlePostCompactHook(): Promise<void> {
@@ -38,13 +39,35 @@ export async function handlePostCompactHook(): Promise<void> {
   }
 
   try {
-    await savePostCompactSummary(summary, hookInput.cwd || null, hookInput.transcript_path || null)
+    const cwd = hookInput.cwd || null
+    const { readJournalState, capturePendingHandoff, writeJournal, readTurns } =
+      await import('../features/journal.js')
 
-    logActivity({
-      type: 'context_warning',
-      session: hookInput.session_id?.slice(0, 8) || 'unknown',
-      message: `PostCompact: saved Claude's own summary (${summary.length} chars)`,
-    }).catch(() => {})
+    const turns = hookInput.transcript_path
+      ? readTurns(hookInput.transcript_path).turns.length
+      : 0
+
+    // Keep the mechanical half current across the compaction boundary.
+    writeJournal(hookInput.session_id || null, cwd, turns, { force: true })
+
+    // Claude's compaction summary is judgement that has already been paid for:
+    // the model wrote it while it still held the full context, and the harness
+    // did not charge us a turn for it. Banking it means the Stop hook never
+    // needs to spend one. It only fills an empty slot, so a handoff written
+    // deliberately is never overwritten by a by-product of compaction.
+    const state = readJournalState(cwd)
+    const banked =
+      state.bankedAt > 0 && state.bankedSession === (hookInput.session_id || '')
+    if (!banked && capturePendingHandoff(cwd, turns, summary, {
+      sessionId: hookInput.session_id || null,
+      source: 'compaction',
+    })) {
+      logActivity({
+        type: 'context_warning',
+        session: hookInput.session_id?.slice(0, 8) || 'unknown',
+        message: `PostCompact: banked Claude's summary as judgement (${summary.length} chars, free)`,
+      }).catch(() => {})
+    }
   } catch {
     // Non-critical
   }
@@ -137,9 +160,11 @@ async function pushCompactToHub(summary: string, cwd: string | null): Promise<vo
     }
 }
 
-// Run if invoked directly
-handlePostCompactHook().catch((err) => {
-  process.stderr.write(`clauditor post-compact hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('post-compact')) {
+  handlePostCompactHook().catch((err) => {
+    process.stderr.write(`clauditor post-compact hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

@@ -21,14 +21,9 @@ export function estimateCost(
 
   const inputCost = (usage.input_tokens / 1_000_000) * p.inputPerMillion
   const outputCost = (usage.output_tokens / 1_000_000) * p.outputPerMillion
-  // Cache writes are billed by TTL: 1.25x base for 5 minutes, 2x for 1 hour.
-  // Claude Code writes at the 1-hour TTL.
-  //
-  // The breakdown is treated as a hint, never as the total. An aggregate that
-  // seeds {5m: 0, 1h: 0} and never populates it would otherwise price every
-  // write at zero, and a partial breakdown would under-bill the remainder.
-  // Whatever the split does not account for is billed at the 1h rate, because
-  // guessing low here is precisely what hid this cost line before.
+  // Cache writes are billed by TTL: 1.25x base for 5m, 2x for 1h.
+  // The breakdown is a hint, never the total: an unpopulated one would price
+  // every write at zero, so the remainder is billed at the 1h rate.
   const write5m = usage.cache_creation?.ephemeral_5m_input_tokens ?? 0
   const write1h = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0
   const unattributed = Math.max(
@@ -85,10 +80,9 @@ export function getPricingForModel(modelId: string): PricingConfig {
   }
   if (best) return best
 
-  // Not an Anthropic model, so it costs nothing on the Anthropic bill. Local
-  // models via Ollama/LM Studio, and Claude Code's own '<synthetic>' marker for
-  // records it generates itself, both land here. Pricing them as Claude
-  // inflated every total that included a subagent on a local model.
+  // Nothing on the Anthropic bill: local models via Ollama or LM Studio, and
+  // Claude Code's own '<synthetic>' marker. Pricing these as Claude inflated
+  // every total containing a subagent on a local model.
   if (!modelId.startsWith('claude-')) return ZERO_PRICING
 
   // Unknown model. Never fail silently: an unpriced model used to fall through
@@ -163,3 +157,25 @@ export function rawTurnTokens(usage: TokenUsage): number {
     usage.cache_read_input_tokens
   )
 }
+
+/**
+ * Input context a turn was billed to carry.
+ *
+ * The three input classes and deliberately not output: this is what a cold
+ * session would have to rewrite, and output is never re-read. Distinct from
+ * rawTurnTokens above, which adds output and is display-only. The two are one
+ * `output_tokens` apart, so a copy of either is impossible to tell apart on
+ * sight, which is why this one is named.
+ *
+ * journal.ts is the only caller so far. The same sum is still open-coded in
+ * cli.ts, cache-health.ts, impact-tracker.ts, daemon/parser.ts and
+ * post-tool-use.ts; those are unconverted, not covered by this.
+ */
+export function contextTokens(usage: TokenUsage): number {
+  return (
+    usage.input_tokens +
+    usage.cache_creation_input_tokens +
+    usage.cache_read_input_tokens
+  )
+}
+

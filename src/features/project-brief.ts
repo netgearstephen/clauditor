@@ -1,6 +1,7 @@
 import { readErrorIndex, effectiveConfidence, confidenceTier } from './error-index.js'
 import { readFileIndex } from './file-tracker.js'
-import { readRecentHandoffs } from './session-state.js'
+import { offerSummary } from './journal.js'
+import { statSync } from 'node:fs'
 
 /**
  * Build a compact project brief from local knowledge.
@@ -98,21 +99,24 @@ function buildFileSection(cwd: string): string | null {
  */
 function buildRecentSection(cwd: string): string | null {
   try {
-    const handoffs = readRecentHandoffs(cwd)
-    if (handoffs.length === 0) return null
+    const summary = offerSummary(null, cwd)
+    if (summary.kind === 'none' || !summary.content || !summary.path) return null
 
-    const latest = handoffs.find((h) => !h.project || h.project === cwd)
-    if (!latest) return null
-
-    const lines = latest.content.split('\n').filter((l: string) => l.trim().length > 0)
-    const taskLine = lines.find((l: string) =>
-      l.includes('Task:') || l.includes('## ') || l.startsWith('**')
-    )
-
+    // Prefer the Mission line: it is the one sentence in a handoff that says
+    // what the session was for. Fall back to the first heading or bold line for
+    // a mechanical journal, which has no Mission.
+    const lines = summary.content.split('\n').filter((l) => l.trim().length > 0)
+    const missionAt = lines.findIndex((l) => /^##\s+Mission\s*$/.test(l))
+    const taskLine =
+      (missionAt >= 0 ? lines[missionAt + 1] : undefined) ??
+      lines.find((l) => l.startsWith('## ') || l.startsWith('**'))
     if (!taskLine) return null
 
-    const timeAgo = Math.round((Date.now() - latest.timestamp) / 60000)
-    const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`
+    let timeStr = 'recently'
+    try {
+      const timeAgo = Math.round((Date.now() - statSync(summary.path).mtimeMs) / 60000)
+      timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`
+    } catch {}
 
     return `## Last session (${timeStr})\n${truncate(taskLine.replace(/^[#*\s]+/, ''), 150)}`
   } catch {

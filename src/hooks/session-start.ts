@@ -6,7 +6,7 @@ import { parseJsonlFile, extractTurns, extractModel } from '../daemon/parser.js'
 import { detectCacheDegradation } from '../features/cache-health.js'
 import { hasResumeBoundary, detectResumeAnomaly } from '../features/resume-detector.js'
 import { logActivity } from '../features/activity-log.js'
-import { readStdin, outputDecision, pruneStaleStateFiles } from './shared.js'
+import { readStdin, outputDecision, pruneStaleStateFiles, isHookEntry, findTranscriptPathSync } from './shared.js'
 
 /**
  * SessionStart hook handler.
@@ -41,6 +41,9 @@ async function buildSessionStartContext(
   sessionId?: string,
 ): Promise<HookDecision> {
   const parts: string[] = []
+  // Goes to the user as systemMessage, so it is built outside the try and
+  // returned separately from the model-facing parts.
+  let advisory: string | null = null
 
   try {
     // Find recent sessions for this project
@@ -56,52 +59,70 @@ async function buildSessionStartContext(
       )
     }
 
-    // Inject session handoff(s) if available
-    const { readRecentHandoffs, extractHandoffDescription } = await import('../features/session-state.js')
-    const handoffs = readRecentHandoffs()
+    // Offer the previous session's summary. Exactly one, never a menu: a
+    // resuming user is answering "is this the thing I was doing", which is a
+    // yes or no, and the old numbered list of up to five full transcripts
+    // spent thousands of tokens making them read four they did not want.
+    const { offerSummary, promoteIfUsed } = await import('../features/journal.js')
 
-    // Helper: short project label for cross-project sessions
-    const projectLabel = (h: { project: string | null }): string => {
-      if (!h.project || h.project === cwd) return ''
-      const name = h.project.split('/').pop() || h.project
-      return ` [${name}]`
-    }
+    // A banked handoff being offered to a new session is the moment it gets
+    // used, and the only point at which a machine-written one earns a place in
+    // the user's own handoffs directory. Promote before offering, so what is
+    // offered is the promoted copy and there is never more than one.
+    try { promoteIfUsed(sessionId ?? null, cwd ?? null) } catch {}
 
-    if (handoffs.length === 1) {
-      // Single recent handoff — inject it directly
-      const h = handoffs[0]
-      const timeAgo = Math.round((Date.now() - h.timestamp) / 60000)
-      const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`
-      const label = projectLabel(h)
+    const summary = offerSummary(sessionId ?? null, cwd ?? null)
 
-      parts.push(
-        `⚠️ BEFORE doing ANYTHING else, you MUST show this message to the user EXACTLY:\n\n` +
-        `"clauditor: I have context from your previous session${label} (saved ${timeStr}). ` +
-        `I can see what you were working on. Want me to continue from there, or are you starting something new?"\n\n` +
-        `Wait for the user to respond before taking any action.\n\n` +
-        `Here is the saved context for reference:\n\n` +
-        h.content
-      )
-    } else if (handoffs.length > 1) {
-      // Multiple recent handoffs — present numbered choice
-      const options = handoffs.slice(0, 5).map((h, i) => {
-        const timeAgo = Math.round((Date.now() - h.timestamp) / 60000)
-        const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`
-        const description = extractHandoffDescription(h)
-        const label = projectLabel(h)
+    // The handoff is advertised to the user, not injected into the model. It
+    // used to arrive as additionalContext with an instruction to render an
+    // offer and wait, which paid the whole entry cost and a model turn before
+    // the user had said whether they wanted it. A systemMessage costs neither.
+    if (summary.kind !== 'none' && summary.path) {
+      const {
+        readJournalState,
+        readSessionBank,
+        msSinceLastTurn,
+        readTurns,
+        recordHandoffOffered,
+      } = await import('../features/journal.js')
+      const { buildResumeAdvisory } = await import('../features/resume-advisory.js')
 
-        return `${i + 1}. (${timeStr}) ${description}${label}`
-      }).join('\n')
+      // The figures come from the banking session's OWN marker, never from the
+      // per-directory state. That state is shared by every session in the
+      // directory and its fields are updated independently, so two sessions
+      // banking in one directory leave it describing neither: observed live on
+      // 2026-09-10, where bankedSession named one session and bankedAtPeak
+      // held another's peak. The marker is per session and cannot mix them.
+      //
+      // Requiring the marker's own handoffPath to be the file being offered is
+      // what keeps the peak, the age and the document describing one session.
+      // Anything less certain falls through with no figures at all.
+      const state = readJournalState(cwd ?? null)
+      const bank = state.bankedSession ? readSessionBank(state.bankedSession) : null
+      const paired = bank !== null && bank.handoffPath === summary.path && bank.peakContext > 0
+      const transcript = paired ? findTranscriptPathSync(state.bankedSession) : null
 
-      parts.push(
-        `⚠️ BEFORE doing ANYTHING else, you MUST show this message to the user EXACTLY:\n\n` +
-        `"clauditor: I found ${handoffs.length} recent sessions:\n\n` +
-        options + `\n\n` +
-        `Which one would you like to continue, or are you starting something new?"\n\n` +
-        `Wait for the user to choose before taking any action. Do NOT pick one yourself.\n\n` +
-        `Full context for each session follows:\n\n` +
-        handoffs.slice(0, 5).map((h, i) => `--- Session ${i + 1} ---\n${h.content}`).join('\n\n')
-      )
+      // Offered once, not to every session that opens this repo for the next
+      // week. findUserHandoff has no notion of an offer having been made, so
+      // without this the same document is pitched to unrelated new sessions
+      // until its seven-day window closes: observed live on 2026-09-10, where
+      // a handoff banked at 16:59 was still being offered the following day.
+      //
+      // Keyed on the path, so a newer handoff is a new offer. Recorded only
+      // when an advisory was actually produced, because a warm-cache session
+      // is shown nothing and must not consume the one offer.
+      if (state.offeredPath !== summary.path) {
+        advisory = buildResumeAdvisory({
+          kind: summary.kind,
+          path: summary.path,
+          peakContext: paired ? bank.peakContext : 0,
+          ageMs: transcript ? msSinceLastTurn(transcript) : null,
+          model: (transcript ? readTurns(transcript).model : null) ?? undefined,
+        })
+        if (advisory) {
+          try { recordHandoffOffered(cwd ?? null, summary.path) } catch {}
+        }
+      }
     }
 
     // Inject project knowledge brief (errors, hot files, recent context)
@@ -218,8 +239,10 @@ async function buildSessionStartContext(
     }).catch(() => {})
   }
 
-  if (parts.length === 0) return {}
-  return { additionalContext: parts.join('\n\n') }
+  const decision: HookDecision = {}
+  if (parts.length > 0) decision.additionalContext = parts.join('\n\n')
+  if (advisory) decision.systemMessage = advisory
+  return decision
 }
 
 /**
@@ -298,9 +321,11 @@ async function checkRecentSessions(projectsDir: string): Promise<string[]> {
   return [...new Set(issues)].slice(0, 3)
 }
 
-// Run if invoked directly
-handleSessionStartHook().catch((err) => {
-  process.stderr.write(`clauditor session-start hook error: ${err}\n`)
-  process.stdout.write('{}')
-  process.exit(0)
-})
+// Run only when this module is the entry point: see isHookEntry.
+if (isHookEntry('session-start')) {
+  handleSessionStartHook().catch((err) => {
+    process.stderr.write(`clauditor session-start hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  })
+}

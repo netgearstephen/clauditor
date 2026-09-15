@@ -638,7 +638,8 @@ program
 
     // 2. Push session handoffs — structured learnings + summaries as team memories
     try {
-      const { readRecentHandoffs, parseStructuredHandoff } = await import('./features/session-state.js')
+      const { parseStructuredHandoff } = await import('./features/session-state.js')
+      const { offerSummary } = await import('./features/journal.js')
       const { scrubSecrets } = await import('./features/secret-scrubber.js')
       const { queueAndSend } = await import('./hub/push-queue.js')
       const { createHash } = await import('node:crypto')
@@ -650,7 +651,12 @@ program
       let syncedHashes: string[] = []
       try { syncedHashes = JSON.parse(readFileSync(syncedFile, 'utf-8')) } catch {}
 
-      const handoffs = readRecentHandoffs(process.cwd())
+      // One summary per project now, not a directory of them. The dedupe by
+      // content hash below still stops it being pushed twice.
+      const current = offerSummary(null, process.cwd())
+      const handoffs = current.content
+        ? [{ content: current.content, path: current.path ?? 'summary' }]
+        : []
       let handoffLearnings = 0
       let summariesPushed = 0
       const newHashes: string[] = []
@@ -1127,35 +1133,6 @@ program
     console.log('\nclauditor activity')
     console.log('─'.repeat(50))
     console.log(formatActivity(events))
-    console.log('')
-  })
-
-// ─── clauditor calibrate ──────────────────────────────────────────
-
-program
-  .command('calibrate')
-  .description('Auto-calibrate rotation threshold from your session history')
-  .option('--json', 'Output as JSON')
-  .action(async (options) => {
-    const { calibrate, formatCalibration } = await import('./features/calibration.js')
-
-    if (!options.json) console.log('Scanning session history...')
-    const result = calibrate()
-
-    if (options.json) {
-      const { sessionProfiles, ...summary } = result
-      console.log(JSON.stringify(summary, null, 2))
-      return
-    }
-
-    console.log('\n' + formatCalibration(result))
-
-    if (result.confident) {
-      console.log(`\n  ✓ Calibrated: will block at ${result.wasteThreshold}x waste, ${result.minTurns}+ turns`)
-    } else {
-      console.log(`\n  ⚠ Not enough data — using conservative 10x threshold`)
-      console.log(`    Use Claude Code for a few more sessions, then run \`clauditor calibrate\` again`)
-    }
     console.log('')
   })
 
@@ -1643,49 +1620,76 @@ hookCmd
   .command('stop')
   .description('Stop hook handler')
   .action(async () => {
-    await import('./hooks/stop.js')
+    const { handleStopHook } = await import('./hooks/stop.js')
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('stop', handleStopHook)
   })
 
 hookCmd
   .command('post-tool-use')
   .description('PostToolUse hook handler')
   .action(async () => {
-    await import('./hooks/post-tool-use.js')
+    const { handlePostToolUseHook } = await import('./hooks/post-tool-use.js')
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('post-tool-use', handlePostToolUseHook)
   })
 
 hookCmd
   .command('pre-tool-use')
   .description('PreToolUse hook handler')
   .action(async () => {
-    await import('./hooks/pre-tool-use.js')
+    const { handlePreToolUseHook } = await import('./hooks/pre-tool-use.js')
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('pre-tool-use', handlePreToolUseHook)
   })
 
 hookCmd
   .command('user-prompt-submit')
   .description('UserPromptSubmit hook handler — blocks oversized sessions')
   .action(async () => {
-    await import('./hooks/user-prompt-submit.js')
+    const { handleUserPromptSubmitHook } = await import('./hooks/user-prompt-submit.js')
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('user-prompt-submit', handleUserPromptSubmitHook)
   })
 
 hookCmd
   .command('pre-compact')
   .description('PreCompact hook handler — saves context before compaction')
   .action(async () => {
-    await import('./hooks/pre-compact.js')
+    const { handlePreCompactHook } = await import('./hooks/pre-compact.js')
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('pre-compact', handlePreCompactHook)
   })
 
 hookCmd
   .command('post-compact')
   .description('PostCompact hook handler — captures Claude\'s own session summary')
   .action(async () => {
-    await import('./hooks/post-compact.js')
+    const { handlePostCompactHook } = await import('./hooks/post-compact.js')
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('post-compact', handlePostCompactHook)
   })
 
 hookCmd
   .command('session-start')
   .description('SessionStart hook handler')
   .action(async () => {
-    await import('./hooks/session-start.js')
+    const { handleSessionStartHook } = await import('./hooks/session-start.js')
+    const { runHookSafely } = await import('./hooks/shared.js')
+    await runHookSafely('session-start', handleSessionStartHook)
+  })
+
+hookCmd
+  .command('session-end')
+  .description('SessionEnd hook handler — stops this session\'s idle timer')
+  .action(async () => {
+    const { readStdin, runHookSafely } = await import('./hooks/shared.js')
+    const { handleSessionEndHook } = await import('./hooks/session-end.js')
+    await runHookSafely('session-end', async () => {
+      const raw = await readStdin()
+      await handleSessionEndHook(JSON.parse(raw))
+      process.stdout.write('{}')
+    })
   })
 
 // ─── Config loader ───────────────────────────────────────────────
@@ -1741,7 +1745,7 @@ program
   .action(async (options) => {
     const { readdirSync, readFileSync, statSync } = await import('node:fs')
     const { extractFacts, scoreHandoff, generateReport } = await import('./features/handoff-quality.js')
-    const { readRecentHandoffs } = await import('./features/session-state.js')
+    const { offerSummary } = await import('./features/journal.js')
 
     // Find transcript
     let transcriptPath = options.transcript
@@ -1798,16 +1802,12 @@ program
     if (options.summary) {
       summaryContent = readFileSync(options.summary, 'utf-8')
     } else {
-      const handoffs = readRecentHandoffs()
-      if (handoffs.length === 0) {
-        console.error('No recent handoff found. Specify one with --summary <path>')
+      const current = offerSummary(null, transcriptCwd ?? process.cwd())
+      if (!current.content) {
+        console.error('No summary found for this project. Specify one with --summary <path>')
         process.exit(1)
       }
-      // Prefer handoff from the same project as the transcript
-      const matched = transcriptCwd
-        ? handoffs.find(h => h.project === transcriptCwd || h.content.includes(transcriptCwd!))
-        : null
-      summaryContent = (matched || handoffs[0]).content
+      summaryContent = current.content
     }
 
     // Extract and score

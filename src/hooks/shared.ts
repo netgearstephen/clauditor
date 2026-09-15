@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import { basename, resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import type { HookDecision } from '../types.js'
@@ -15,6 +15,45 @@ export function readStdin(): Promise<string> {
     process.stdin.on('end', () => resolve(data))
     process.stdin.on('error', reject)
   })
+}
+
+/**
+ * Is this module the process's entry point?
+ *
+ * Hook modules used to run themselves on import, unconditionally. The build
+ * bundles several of them into one chunk, so importing one ran another: the
+ * configured `clauditor hook post-tool-use` emitted two JSON objects on
+ * stdout, and Claude Code reported a hook error on every Write and Edit.
+ *
+ * Comparing against argv[1] keeps `node dist/hooks/<name>.js` working, which
+ * the end-to-end tests drive directly, while the CLI calls handlers by name.
+ */
+export function isHookEntry(name: string): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  return basename(entry).replace(/\.(?:m|c)?js$/, '') === name
+}
+
+/**
+ * Run a hook handler so that a throw can never break the tool call.
+ *
+ * The module-level invocation has always caught its own errors, written an
+ * empty decision and exited 0. The CLI, which calls handlers by name, needs
+ * the same net: without it a bug inside a handler reaches Claude Code as a
+ * failed hook on every tool call, which is how a latent Bash crash became
+ * visible noise in unrelated sessions.
+ */
+export async function runHookSafely(
+  name: string,
+  handler: () => Promise<void>
+): Promise<void> {
+  try {
+    await handler()
+  } catch (err) {
+    process.stderr.write(`clauditor ${name} hook error: ${err}\n`)
+    process.stdout.write('{}')
+    process.exit(0)
+  }
 }
 
 /**
