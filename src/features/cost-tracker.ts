@@ -1,5 +1,6 @@
 import type { TokenUsage, PricingConfig, TurnMetrics } from '../types.js'
 import { MODEL_PRICING, FALLBACK_PRICING_MODEL, ZERO_PRICING } from '../types.js'
+import { readConfig, type PricingUserConfig } from '../config.js'
 
 export interface CostEstimate {
   inputCost: number
@@ -17,7 +18,9 @@ export function estimateCost(
   usage: TokenUsage,
   pricing?: PricingConfig
 ): CostEstimate {
-  const p = pricing ?? MODEL_PRICING[FALLBACK_PRICING_MODEL]
+  // getPricingForModel rather than the table, so a caller with no model in
+  // hand still gets the configured discount rather than list price.
+  const p = pricing ?? getPricingForModel(FALLBACK_PRICING_MODEL)
 
   const inputCost = (usage.input_tokens / 1_000_000) * p.inputPerMillion
   const outputCost = (usage.output_tokens / 1_000_000) * p.outputPerMillion
@@ -62,27 +65,109 @@ export function estimateCost(
 const warnedUnknownModels = new Set<string>()
 
 /**
- * Detect model from assistant record and return appropriate pricing.
+ * The discount config and the scaled tables, read once per process.
  *
- * Matches the LONGEST key that prefixes the model ID. A plain first-match loop
- * is wrong here because several keys prefix others ('claude-fable-5' prefixes
- * 'claude-fable-5-1'), which would silently price a model as its predecessor.
- * Handles suffixed IDs such as 'claude-opus-5[1m]' and dated snapshots.
+ * getPricingForModel is called once per turn inside the transcript parse
+ * loop in session-state, and readConfig reads and parses a file on every
+ * call. Caching the scaled table as well as the config keeps the hot path at
+ * a map lookup. A hook process lives for one event, so nothing has to
+ * invalidate this; resetPricingCache exists for the tests.
  */
-export function getPricingForModel(modelId: string): PricingConfig {
-  let best: PricingConfig | null = null
+let pricingConfig: PricingUserConfig | null = null
+let discounted: Map<string, PricingConfig> | null = null
+
+export function resetPricingCache(): void {
+  pricingConfig = null
+  discounted = null
+}
+
+function pricingOverrides(): PricingUserConfig {
+  if (!pricingConfig) pricingConfig = readConfig().pricing
+  return pricingConfig
+}
+
+/**
+ * Fraction off list for one model key: per-model, then top level, then none.
+ *
+ * Clamped to 0 to 1. A discount above 1 would invert the sign of every rate
+ * and a negative one would quietly report more than the invoice, and neither
+ * is worth crashing a hook over, so both are clamped rather than rejected.
+ */
+function discountFor(key: string): number {
+  const config = pricingOverrides()
+  const value = config.perModel[key]?.discount ?? config.discount
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.min(value, 1)
+}
+
+/**
+ * List price scaled by the discount, or the list entry itself at zero.
+ *
+ * Returning the original object at zero is what makes "no discount
+ * configured" provably identical to the behaviour before this existed,
+ * rather than merely arithmetically equal to it.
+ */
+function applyDiscount(pricing: PricingConfig, discount: number): PricingConfig {
+  if (discount === 0) return pricing
+  const factor = 1 - discount
+  return {
+    ...pricing,
+    inputPerMillion: pricing.inputPerMillion * factor,
+    outputPerMillion: pricing.outputPerMillion * factor,
+    cacheCreationPerMillion: pricing.cacheCreationPerMillion * factor,
+    cacheCreation1hPerMillion: pricing.cacheCreation1hPerMillion * factor,
+    cacheReadPerMillion: pricing.cacheReadPerMillion * factor,
+  }
+}
+
+/** The list entry for a key, scaled and memoised. */
+function pricingForKey(key: string): PricingConfig {
+  if (!discounted) discounted = new Map()
+  const hit = discounted.get(key)
+  if (hit) return hit
+  const scaled = applyDiscount(MODEL_PRICING[key], discountFor(key))
+  discounted.set(key, scaled)
+  return scaled
+}
+
+/**
+ * The longest MODEL_PRICING key that prefixes this model ID, or null.
+ *
+ * Extracted from getPricingForModel so the banking trigger can key its
+ * per-model overrides the same way. One model-key rule in the codebase, not
+ * two: a plain first-match loop is wrong here because several keys prefix
+ * others ('claude-fable-5' prefixes 'claude-fable-5-1'), which would
+ * silently treat a model as its predecessor. Handles suffixed IDs such as
+ * 'claude-opus-5[1m]' and dated snapshots.
+ */
+export function pricingKeyForModel(modelId: string): string | null {
+  let bestKey: string | null = null
   let bestLen = -1
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+  for (const key of Object.keys(MODEL_PRICING)) {
     if (modelId.startsWith(key) && key.length > bestLen) {
-      best = pricing
+      bestKey = key
       bestLen = key.length
     }
   }
-  if (best) return best
+  return bestKey
+}
+
+/**
+ * Detect model from assistant record and return appropriate pricing.
+ *
+ * Rates come back scaled by the configured discount, which is zero unless
+ * the user set one: see applyDiscount. The model matching itself lives in
+ * pricingKeyForModel.
+ */
+export function getPricingForModel(modelId: string): PricingConfig {
+  const key = pricingKeyForModel(modelId)
+  if (key) return pricingForKey(key)
 
   // Nothing on the Anthropic bill: local models via Ollama or LM Studio, and
   // Claude Code's own '<synthetic>' marker. Pricing these as Claude inflated
-  // every total containing a subagent on a local model.
+  // every total containing a subagent on a local model. Not discounted
+  // either: a fraction off zero is zero, and scaling it would replace a
+  // shared sentinel with a copy of itself.
   if (!modelId.startsWith('claude-')) return ZERO_PRICING
 
   // Unknown model. Never fail silently: an unpriced model used to fall through
@@ -94,7 +179,7 @@ export function getPricingForModel(modelId: string): PricingConfig {
         `costs are estimated using ${FALLBACK_PRICING_MODEL} rates and may be too high.`
     )
   }
-  return MODEL_PRICING[FALLBACK_PRICING_MODEL]
+  return pricingForKey(FALLBACK_PRICING_MODEL)
 }
 
 /**

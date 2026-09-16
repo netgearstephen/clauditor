@@ -1702,7 +1702,6 @@ async function loadConfig(): Promise<ClauditorConfig> {
       return {
         ...DEFAULT_CONFIG,
         ...result.config,
-        pricing: { ...DEFAULT_CONFIG.pricing, ...result.config.pricing },
         alerts: { ...DEFAULT_CONFIG.alerts, ...result.config.alerts },
         bashFilter: { ...DEFAULT_CONFIG.bashFilter, ...result.config.bashFilter },
         watch: { ...DEFAULT_CONFIG.watch, ...result.config.watch },
