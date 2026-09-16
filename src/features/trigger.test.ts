@@ -84,4 +84,36 @@ describe('resolveTrigger', () => {
     const t = resolveTrigger(null, config({ perModel: { 'claude-opus-5': { peakContext: 1 } } }))
     expect(t.gate).toBe(150_000)
   })
+
+  it('floors a gate that a buffer larger than the peak would push negative', () => {
+    // A negative gate is beaten by every session's first turn: the failure
+    // mode the clamp exists to prevent, arrived at from the other direction.
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    const t = resolveTrigger('claude-opus-5', config({ peakContext: 150_000, buffer: 200_000 }))
+    expect(t.gate).toBe(0)
+    expect(t.clampedTo).toBeNull()
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+
+  it('falls back to a finite gate when a knob resolves to a non-numeric value', () => {
+    // config.ts passes JSON straight through with no validation, so a
+    // non-numeric buffer is reachable, not hypothetical.
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    const t = resolveTrigger('claude-opus-5', config({ buffer: Number.NaN }))
+    expect(Number.isFinite(t.gate)).toBe(true)
+    expect(t.gate).toBeGreaterThanOrEqual(0)
+    expect(t.clampedTo).toBeNull()
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+
+  it('warns on a misconfigured gate even with no model to key the warning by', () => {
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    const t = resolveTrigger(null, config({ peakContext: 100_000, buffer: 200_000 }))
+    expect(t.gate).toBe(0)
+    expect(t.clampedTo).toBeNull()
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
 })

@@ -22,11 +22,33 @@ export interface ResolvedTrigger {
   clampedTo: number | null
 }
 
-/** Models already warned about, so a clamp is reported once, not per turn. */
-const warnedClampedModels = new Set<string>()
+/**
+ * Fallback gate used only when peakContext minus buffer cannot be trusted at
+ * all (non-finite, from a non-numeric knob upstream, since config.ts passes
+ * JSON straight through with no validation). Mirrors the built-in default at
+ * DEFAULTS.rotation.trigger.peakContext in src/config.ts; kept as a local
+ * constant rather than imported so this module does not reach into config
+ * internals for one number.
+ */
+const FALLBACK_PEAK_CONTEXT = 150_000
+
+/**
+ * Problems already warned about, keyed by what went wrong plus which model
+ * it happened for, so each distinct problem is reported once per model per
+ * process rather than once per turn within that process. A hook is a fresh
+ * process every turn, so this buys one warning per model per process, not
+ * one warning for the lifetime of a session.
+ */
+const warned = new Set<string>()
 
 export function resetTriggerWarnings(): void {
-  warnedClampedModels.clear()
+  warned.clear()
+}
+
+function warnOnce(dedupeKey: string, message: string): void {
+  if (warned.has(dedupeKey)) return
+  warned.add(dedupeKey)
+  process.emitWarning(message)
 }
 
 /**
@@ -57,22 +79,61 @@ export function resolveTrigger(
   const buffer = override?.buffer ?? trigger.buffer
   const minRequestsSinceBank = override?.minRequestsSinceBank ?? trigger.minRequestsSinceBank
 
-  const wanted = peakContext - buffer
-  const window = key ? MODEL_PRICING[key]?.windowTokens : undefined
-  const ceiling = window === undefined ? Infinity : window * WINDOW_FRACTION
+  // The label a warning names the model by. key is the resolved pricing key
+  // when there is one; modelId carries an unmatched model through instead of
+  // dropping to silence, and there is a label even with no model at all,
+  // because a misconfigured gate must be loud whether or not it is keyed.
+  const modelLabel = key ?? modelId ?? '(no model)'
 
+  const rawWanted = peakContext - buffer
+  let wanted: number
+  if (!Number.isFinite(rawWanted)) {
+    // A non-numeric knob upstream makes peakContext - buffer NaN or
+    // infinite. A gate like that can never fire, which is exactly the
+    // silent failure this whole module exists to prevent, so it does not
+    // reach the caller: fall back to the top-level peak, or to the built-in
+    // default when even that is not trustworthy.
+    wanted = Number.isFinite(trigger.peakContext)
+      ? Math.max(0, trigger.peakContext)
+      : FALLBACK_PEAK_CONTEXT
+    warnOnce(
+      `nonfinite:${modelLabel}`,
+      `clauditor: the banking gate resolved to a non-numeric value for ${modelLabel}; check ` +
+        `the trigger's peakContext and buffer, falling back to ${wanted.toLocaleString('en-GB')} tokens.`
+    )
+  } else if (rawWanted < 0) {
+    // A buffer larger than the peak. Every session's peak would beat a
+    // negative gate on its first turn, which is the same unreachable-gate
+    // failure the window clamp guards against, arrived at from below.
+    wanted = 0
+    warnOnce(
+      `negative:${modelLabel}`,
+      `clauditor: the trigger's buffer of ${buffer.toLocaleString('en-GB')} exceeds its peakContext ` +
+        `of ${peakContext.toLocaleString('en-GB')} for ${modelLabel}; using a gate of 0 instead.`
+    )
+  } else {
+    wanted = rawWanted
+  }
+
+  const window = key ? MODEL_PRICING[key]?.windowTokens : undefined
+  if (window === undefined) {
+    // Unknown stays unknown. Never treated as unlimited: clamping a gate the
+    // user configured against a guessed window would be worse than not
+    // clamping at all.
+    return { peakContext, buffer, minRequestsSinceBank, gate: wanted, clampedTo: null }
+  }
+
+  const ceiling = window * WINDOW_FRACTION
   if (wanted <= ceiling) {
     return { peakContext, buffer, minRequestsSinceBank, gate: wanted, clampedTo: null }
   }
 
-  if (key && !warnedClampedModels.has(key)) {
-    warnedClampedModels.add(key)
-    process.emitWarning(
-      `clauditor: the banking gate of ${wanted.toLocaleString('en-GB')} tokens is above ` +
-        `${key}'s usable window, so it could never fire; using ` +
-        `${ceiling.toLocaleString('en-GB')} instead.`
-    )
-  }
+  warnOnce(
+    `window:${key}`,
+    `clauditor: the banking gate of ${wanted.toLocaleString('en-GB')} tokens is above ` +
+      `${key}'s usable window, so it could never fire; using ` +
+      `${ceiling.toLocaleString('en-GB')} instead.`
+  )
 
   return { peakContext, buffer, minRequestsSinceBank, gate: ceiling, clampedTo: ceiling }
 }
