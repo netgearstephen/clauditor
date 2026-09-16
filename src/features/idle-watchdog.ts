@@ -51,7 +51,13 @@ export interface IdleBankFacts {
    * is not a thrash hole.
    */
   requestsSinceBank: number
-  /** The resolved trigger's anti-thrash floor for this session's model. */
+  /**
+   * The anti-thrash floor that applies to this session, already resolved.
+   *
+   * Zero until the session has banked once in this directory: the floor is a
+   * re-bank rule, and the resolution happens at gathering time so that
+   * shouldIdleBank stays a plain comparison of two numbers.
+   */
   minRequestsSinceBank: number
   /** Is the session's inbox socket still there? */
   socketExists: boolean

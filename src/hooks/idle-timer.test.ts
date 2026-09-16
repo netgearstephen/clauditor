@@ -322,6 +322,17 @@ describe('the idle timer', () => {
     const cfg = await import('../config.js')
     cfg.writeConfig({ rotation: { trigger: { minRequestsSinceBank: 20 } } } as never)
 
+    // The floor only reaches a session that has banked here before, so this
+    // one is given a bank of its own to be held back from. Without it the
+    // floor resolves to zero and the wiring under test is never exercised.
+    const journal = await import('../features/journal.js')
+    journal.writeJournalState(CWD, {
+      ...journal.readJournalState(CWD),
+      bankedAt: Date.now(),
+      bankedAtTurn: 0,
+      bankedSession: 'idle-1',
+    })
+
     expect(await timer.runIdleTimerOnce('idle-1')).toBe('nothing')
     server.close()
 

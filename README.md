@@ -165,7 +165,7 @@ One config file at `~/.clauditor/config.json`, created on `clauditor install`. I
 | `rotation.enabled` | `true` | Bank handoffs and arm idle timers at all |
 | `rotation.trigger.peakContext` | `150000` | The banking gate. See below |
 | `rotation.trigger.buffer` | `0` | Tokens to fire early by, without moving the gate itself |
-| `rotation.trigger.minRequestsSinceBank` | `20` | Billed requests since the last bank before another one is allowed |
+| `rotation.trigger.minRequestsSinceBank` | `20` | Billed requests since the last bank before another one is allowed. Re-banks only; a session's first bank is never held back |
 | `rotation.trigger.perModel` | `{}` | Per-field overrides keyed by model prefix, e.g. `{ "claude-haiku-4-5": { "peakContext": 120000 } }`. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
 | `rotation.minPeakContext` | `150000` | Deprecated alias for `rotation.trigger.peakContext`. See below |
 | `rotation.reBankGrowth` | `50000` | Peak-context growth since the last bank that earns a rewrite. Refreshes 65% of banking sessions, against 34% at 100k |
@@ -214,11 +214,13 @@ cost per request bottoms out at a 138k trigger: 150k is 0.2% off that, the old
 auto-compact. `buffer` fires early without moving the gate the measurements
 were taken against. `minRequestsSinceBank` stops a session that has just banked
 from banking again the moment it has grown enough to qualify; a request here is
-one billed API request, of which a single prompt is a mean of 26.6. The same
-floor applies to a session's first bank, not only a re-bank: a session that has
-never banked reads as zero requests since its (nonexistent) last one, so a
-short session that reaches the gate inside twenty billed requests waits rather
-than banking immediately, on the same reasoning as a re-bank.
+one billed API request, of which a single prompt is a mean of 26.6. It applies
+to a re-bank only. A session that has never banked has nothing to thrash
+against, and holding it back would work against the gate: the gate exists to
+catch sessions earlier, while a floor on first banks holds back precisely the
+earliest arrivals, which is the short but already large session (one that
+pastes a document, or resumes with a big handoff) this tool exists for. Size is
+the gate's question, and a session at the gate has already answered it.
 
 A gate above the model's context window is not a late gate, it is no gate: the
 peak never reaches it and banking goes quiet. Where the window is known, the

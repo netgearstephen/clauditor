@@ -67,10 +67,9 @@ function warnOnce(dedupeKey: string, message: string): void {
  * that is not known is left unclamped, because clamping against a guess would
  * move a gate the user chose.
  *
- * Callers that take modelId from readTurns are passing the session's FIRST
- * model, not its current one, so a session that switched gets the override
- * and the window clamp of the model it started on. Inert under the shipped
- * defaults, where perModel is empty and the gate sits below every window.
+ * modelId from readTurns is the session's FIRST model, not its current one,
+ * so a session that switched gets the override and window clamp of the model
+ * it started on. Inert under the shipped defaults.
  */
 export function resolveTrigger(
   modelId: string | null,
@@ -90,12 +89,9 @@ export function resolveTrigger(
   // because a misconfigured gate must be loud whether or not it is keyed.
   const modelLabel = key ?? modelId ?? '(no model)'
 
-  // The floor gets the same treatment as the gate, because it fails the same
-  // way. config performs no coercion, so a hand-edited "abc" reaches
-  // turns - bankedTurn < NaN, which is false and silently removes the floor,
-  // and a negative value is accepted as a no-op. Falling back to 0 fails open
-  // into the previous behaviour: a broken floor must not be able to close
-  // banking off, which is the silent failure this module exists to prevent.
+  // config performs no coercion, so "abc" reaches turns - banked < NaN, which
+  // is false and removes the floor silently. Falls open to 0 rather than
+  // closed: a broken floor must not be able to stop banking altogether.
   let minRequestsSinceBank: number
   if (Number.isFinite(rawFloor) && rawFloor >= 0) {
     minRequestsSinceBank = Number(rawFloor)

@@ -24,10 +24,9 @@ export function Dashboard({ session }: DashboardProps) {
   const banked = peak >= gate
 
   const barWidth = 30
-  // Math.max(1, gate) because resolveTrigger deliberately allows a gate of 0
-  // (a buffer that exceeds the peak) and warns rather than refusing. Dividing
-  // by it gives Infinity, or NaN when the peak is 0 too, and String.repeat
-  // coerces NaN to 0, so the bar would render blank instead of full.
+  // resolveTrigger allows a gate of 0 (a buffer over the peak), and dividing
+  // by it gives Infinity, or NaN when the peak is 0 too. String.repeat
+  // coerces NaN to 0, so the bar would render blank rather than full.
   const filled = Math.round(Math.min(1, peak / Math.max(1, gate)) * barWidth)
   const peakBar = '█'.repeat(filled) + '░'.repeat(barWidth - filled)
   const barColor = banked ? 'green' : peak >= gate * 0.7 ? 'yellow' : 'blue'

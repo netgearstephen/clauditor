@@ -33,12 +33,9 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'clauditor-bank-e2e-'))
-    // Sized against the default request floor, not arbitrary: the re-bank
-    // cases bank at 70 turns and grow to 90, so 90 - 70 is exactly 20 and
-    // clears a floor of 20 with nothing to spare (20 < 20 is false, by one
-    // request). Raise the default minRequestsSinceBank above 20
-    // and size these two numbers with it, or they fail for a reason that has
-    // nothing to do with what they are testing.
+    // Sized against the default request floor: the re-bank cases bank at 70
+    // and grow to 90, clearing a floor of 20 with nothing to spare. Raise the
+    // default above 20 and these numbers must move with it.
     transcript = transcriptWithPeak(70, 400_000)
   })
 
@@ -371,16 +368,8 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
 
   it('asks on a short session that is already large', () => {
     // The mirror case the waste-factor gate missed: few turns, but a cold
-    // rewrite of this context is exactly what banking avoids. By design, the
-    // request floor applies to a first bank too, not just a re-bank: twelve
-    // turns is under the default floor of twenty, so it is cleared here to
-    // isolate the size gate this test is actually about. See the sibling
-    // test below for what the shipped defaults do to this same session.
-    mkdirSync(join(home, '.clauditor'), { recursive: true })
-    writeFileSync(
-      join(home, '.clauditor', 'config.json'),
-      JSON.stringify({ rotation: { trigger: { minRequestsSinceBank: 0 } } })
-    )
+    // rewrite of this context is what banking avoids. No config is written,
+    // so it is also the evidence that a first bank is exempt from the floor.
     const out = runHook({
       session_id: 'e2e-0011',
       transcript_path: transcriptWithPeak(12, 260_000),
@@ -390,22 +379,29 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
     expect(JSON.parse(out).decision).toBe('block')
   })
 
-  it('holds a short-but-large first bank back under the shipped defaults', () => {
-    // The measured design, not an accident: bankedAtTurn is 0 for a session
-    // that has never banked, so the request floor applies to a first bank
-    // exactly as it would to a re-bank, and twelve turns does not clear the
-    // default of twenty. No config is written here, unlike the case above,
-    // so this is the only test on the Stop path that exercises the shipped
-    // default rather than an explicit value, and it is the evidence that
-    // this session's first bank waits under what actually ships.
-    const out = runHook({
+  it('holds a re-bank back under the shipped default floor', () => {
+    // The only Stop-path test that resolves the shipped default. Banks at
+    // turn 70, returns five requests later having grown 160k, past the 50k
+    // that earns a re-bank: only the floor can be refusing it.
+    const request = {
       session_id: 'e2e-0011b',
-      transcript_path: transcriptWithPeak(12, 260_000),
+      transcript_path: transcript,
       stop_hook_active: false,
       hook_event_name: 'Stop',
+    }
+    runHook(request)
+    const written = join(home, '.claude', 'handoffs', 'first-20260909-1400.md')
+    mkdirSync(dirname(written), { recursive: true })
+    writeFileSync(written, `# Handoff: First\n\n## Mission\nAt 400k.\n${'x'.repeat(200)}\n`)
+    runHook({
+      ...request,
+      stop_hook_active: true,
+      last_assistant_message: `Read \`${written}\`\n[clauditor-banked-handoff]`,
     })
-    expect(JSON.parse(out)).toEqual({})
-  })
+
+    const grown = transcriptWithPeak(75, 560_000)
+    expect(JSON.parse(runHook({ ...request, transcript_path: grown }))).toEqual({})
+  }, 30_000)
 
   it('honours a per-model gate override, not just the top-level default', () => {
     // Proof the resolved trigger is actually consulted: the default gate

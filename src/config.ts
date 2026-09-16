@@ -45,6 +45,9 @@ export interface TriggerConfig {
    * Requests since the last bank before another one is allowed. Anti-thrash,
    * not a prediction.
    *
+   * Applies to a re-bank only: a session that has never banked has nothing to
+   * thrash against, and holding it back works against the gate.
+   *
    * A "request" is one billed API request, which is what a turn is here, not
    * one user prompt: measured over this user's history a single prompt is a
    * mean of 26.6 and a median of 10 billed requests. The alternative

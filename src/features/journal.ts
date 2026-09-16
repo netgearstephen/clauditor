@@ -788,17 +788,13 @@ export function peakContextTokens(turns: TurnMetrics[]): number {
 /**
  * Billed requests since this session's own bank, or since it began.
  *
- * bankedAtTurn belongs to the directory, not the session: a bank another
- * session made in this repo says nothing about how long this one has been
- * running, and its turn count may well be higher than ours. Fall back to zero
- * for it, which is the same measurement a session that has never banked gets.
- * Clamped rather than trusted bare, since a floor of 0 must actually disable
- * the rule and a truncated transcript could otherwise put a session below its
- * own recorded bank turn.
+ * bankedAtTurn is directory-scoped: a bank another session made in this repo
+ * says nothing about how long this one has run, and its turn count may be
+ * higher than ours, so it falls back to zero. Clamped so that a floor of 0
+ * truly disables the rule and a truncated transcript cannot go negative.
  *
- * One function rather than one copy per decider: both halves of this rule
- * have been wrong once already, and the Stop path and the idle path have no
- * shared test that would catch them drifting apart.
+ * One function, not one copy per decider: the Stop and idle paths share no
+ * test that would catch two copies drifting apart.
  */
 export function requestsSinceBank(
   state: JournalState,
@@ -806,6 +802,25 @@ export function requestsSinceBank(
   turns: number
 ): number {
   return Math.max(0, turns - (state.bankedSession === sessionId ? state.bankedAtTurn : 0))
+}
+
+/**
+ * The request floor that applies to this session: none until it has banked.
+ *
+ * The floor is anti-thrash, and a session that has never banked has nothing
+ * to thrash against. Applying it anyway worked against the gate, which was
+ * lowered to catch sessions earlier while the floor held back precisely the
+ * earliest arrivals: the short but already large session this tool exists
+ * for. Size is the gate's question, and one at the gate has answered it.
+ *
+ * The measurements behind the default of 20 were all taken on re-banks.
+ */
+export function requestFloorFor(
+  state: JournalState,
+  sessionId: string | null,
+  floor: number
+): number {
+  return state.bankedSession === sessionId ? floor : 0
 }
 
 /**
@@ -836,10 +851,10 @@ export function requestsSinceBank(
  * different question, whether this session in particular has just banked, so
  * a second document minutes later would be thrashing rather than reuse. What
  * is knowable is billed requests since the last bank, since requests
- * remaining is not, and bankedAtTurn is 0 for a session that has never
- * banked, so a first bank is measured from the start of the session rather
- * than special-cased. Defaulted to no floor, so a caller that passes neither
- * knob behaves exactly as before.
+ * remaining is not. It does not reach a session's first bank at all: see
+ * requestFloorFor for why, and note that the gate is the size instrument.
+ * Defaulted to no floor, so a caller that passes neither knob behaves
+ * exactly as before.
  */
 export function shouldBankHandoff(
   state: JournalState,
@@ -861,7 +876,12 @@ export function shouldBankHandoff(
 ): boolean {
   if (peakContext < gate) return false
 
-  if (requestsSinceBank(state, sessionId, turns) < minRequestsSinceBank) return false
+  if (
+    requestsSinceBank(state, sessionId, turns) <
+    requestFloorFor(state, sessionId, minRequestsSinceBank)
+  ) {
+    return false
+  }
 
   // Already banked, in this directory or any other. The one thing that earns a
   // second bank is the session having grown materially since: the document

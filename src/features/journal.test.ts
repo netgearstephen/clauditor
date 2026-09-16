@@ -315,26 +315,26 @@ describe('journal', () => {
       ).toBe(true)
     })
 
-    it('measures a first bank from turn zero, so a fast session waits', async () => {
+    it('exempts a first bank from the floor, however few requests it has taken', async () => {
       const { shouldBankHandoff } = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
-      // bankedAtTurn is 0 for a session that has never banked, so the floor
-      // applies to the session's own request count. Pinned rather than
-      // special-cased: this is what the approved design specifies, and
-      // reaching the gate inside twenty billed requests is rare rather than
-      // impossible, since one user prompt is a mean of 26.6 of them.
+      // Twelve requests, under the floor of twenty, and past the gate. The
+      // floor is anti-thrash and this session has never banked, so there is
+      // nothing to thrash against; holding it back works against the gate.
       expect(
         shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', {
           now: warm,
           minRequestsSinceBank: 20,
           turns: 12,
         })
-      ).toBe(false)
+      ).toBe(true)
+      // Even at one request, so the exemption is the rule and not an
+      // off-by-one that a slightly longer session would fall through.
       expect(
         shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', {
           now: warm,
           minRequestsSinceBank: 20,
-          turns: 25,
+          turns: 1,
         })
       ).toBe(true)
     })

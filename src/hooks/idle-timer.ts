@@ -12,6 +12,7 @@ import {
   readSessionBank,
   readTurns,
   recordBankRequest,
+  requestFloorFor,
   requestsSinceBank,
 } from '../features/journal.js'
 import {
@@ -86,7 +87,11 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
     rotationEnabled: config.rotation.enabled,
     reBankGrowth: config.rotation.reBankGrowth,
     requestsSinceBank: requestsSinceBank(state, file.sessionId, turns.length),
-    minRequestsSinceBank: resolveTrigger(model).minRequestsSinceBank,
+    minRequestsSinceBank: requestFloorFor(
+      state,
+      file.sessionId,
+      resolveTrigger(model).minRequestsSinceBank
+    ),
     socketExists: socketStillOurs(file),
   }
 }
