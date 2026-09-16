@@ -95,13 +95,15 @@ export interface ClauditorUserConfig {
      * afterwards, so the document is out of date from the moment it is
      * written.
      *
-     * 50k, because 100k was above the drift it was meant to catch. Of the 321
-     * sessions that cross the 200k gate, the median grows 72k more before it
-     * ends, so at 100k the median banking session never refreshed at all and
-     * the document it left behind was missing a third of the session's turns.
-     * 50k refreshes 65% of them against 34% at 100k. The extra turn costs
-     * about 0.2 x C + 37,000 units warm, which is the cheapest write in the
-     * rotation and the only one that buys the document back from being stale.
+     * 50k, because 100k was above the drift it was meant to catch. Measured
+     * against the former 200k gate, not re-measured against the current 150k
+     * default: of the 321 sessions that crossed 200k, the median grows 72k
+     * more before it ends, so at 100k the median banking session never
+     * refreshed at all and the document it left behind was missing a third
+     * of the session's turns. 50k refreshes 65% of them against 34% at 100k.
+     * The extra turn costs about 0.2 x C + 37,000 units warm, which is the
+     * cheapest write in the rotation and the only one that buys the document
+     * back from being stale.
      */
     reBankGrowth: number
     /**
