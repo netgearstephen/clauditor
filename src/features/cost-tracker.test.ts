@@ -197,3 +197,20 @@ describe('contextTokens', () => {
     ).toBe(0)
   })
 })
+
+describe('context windows', () => {
+  it('carries the window for the models whose window is known', () => {
+    expect(getPricingForModel('claude-opus-5').windowTokens).toBe(1_000_000)
+    expect(getPricingForModel('claude-sonnet-5').windowTokens).toBe(1_000_000)
+    expect(getPricingForModel('claude-fable-5-1').windowTokens).toBe(1_000_000)
+    expect(getPricingForModel('claude-sonnet-4-6').windowTokens).toBe(1_000_000)
+    expect(getPricingForModel('claude-haiku-4-5').windowTokens).toBe(200_000)
+  })
+
+  it('leaves the window unset rather than guessing it', () => {
+    // An unset window means "do not clamp", which is the safe default. A
+    // guessed one would silently move a gate the user configured.
+    expect(getPricingForModel('claude-opus-4-6').windowTokens).toBeUndefined()
+    expect(getPricingForModel('qwen36-35b:latest').windowTokens).toBeUndefined()
+  })
+})
