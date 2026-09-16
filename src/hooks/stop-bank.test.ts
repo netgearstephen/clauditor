@@ -365,10 +365,11 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
 
   it('asks on a short session that is already large', () => {
     // The mirror case the waste-factor gate missed: few turns, but a cold
-    // rewrite of this context is exactly what banking avoids. Twelve turns is
-    // under the default request floor, which exists to hold back a re-bank
-    // fired too soon after the last one, not a session's very first bank, so
-    // it is cleared here to isolate the case this test is actually about.
+    // rewrite of this context is exactly what banking avoids. By design, the
+    // request floor applies to a first bank too, not just a re-bank: twelve
+    // turns is under the default floor of twenty, so it is cleared here to
+    // isolate the size gate this test is actually about. See the sibling
+    // test below for what the shipped defaults do to this same session.
     mkdirSync(join(home, '.clauditor'), { recursive: true })
     writeFileSync(
       join(home, '.clauditor', 'config.json'),
@@ -381,6 +382,23 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
       hook_event_name: 'Stop',
     })
     expect(JSON.parse(out).decision).toBe('block')
+  })
+
+  it('holds a short-but-large first bank back under the shipped defaults', () => {
+    // The measured design, not an accident: bankedAtTurn is 0 for a session
+    // that has never banked, so the request floor applies to a first bank
+    // exactly as it would to a re-bank, and twelve turns does not clear the
+    // default of twenty. No config is written here, unlike the case above,
+    // so this is the only test on the Stop path that exercises the shipped
+    // default rather than an explicit value, and it is the evidence that
+    // this session's first bank waits under what actually ships.
+    const out = runHook({
+      session_id: 'e2e-0011b',
+      transcript_path: transcriptWithPeak(12, 260_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out)).toEqual({})
   })
 
   it('honours a per-model gate override, not just the top-level default', () => {
