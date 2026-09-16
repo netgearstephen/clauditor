@@ -108,6 +108,32 @@ describe('resolveTrigger', () => {
     warn.mockRestore()
   })
 
+  it('falls the request floor open to 0 when it resolves to a non-numeric value', () => {
+    // Fails open, not closed: a floor nobody can satisfy would stop banking
+    // altogether and say nothing, which is the failure this module exists to
+    // prevent. The gate has this guard; the floor beside it must too.
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    const t = resolveTrigger('claude-opus-5', config({ minRequestsSinceBank: Number.NaN }))
+    expect(t.minRequestsSinceBank).toBe(0)
+    expect(t.gate).toBe(150_000)
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+
+  it('falls the request floor open to 0 when it is negative, and leaves a floor of 0 alone', () => {
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    expect(resolveTrigger('claude-opus-5', config({ minRequestsSinceBank: -5 })).minRequestsSinceBank).toBe(0)
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+
+    // 0 is a legitimate setting, meaning no floor, and must pass the guard
+    // rather than trip it.
+    const quiet = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    expect(resolveTrigger('claude-opus-5', config({ minRequestsSinceBank: 0 })).minRequestsSinceBank).toBe(0)
+    expect(quiet).not.toHaveBeenCalled()
+    quiet.mockRestore()
+  })
+
   it('warns on a misconfigured gate even with no model to key the warning by', () => {
     const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
     const t = resolveTrigger(null, config({ peakContext: 100_000, buffer: 200_000 }))
