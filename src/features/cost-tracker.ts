@@ -71,7 +71,7 @@ const warnedUnknownModels = new Set<string>()
  * loop in session-state, and readConfig reads and parses a file on every
  * call. Caching the scaled table as well as the config keeps the hot path at
  * a map lookup. A hook process lives for one event, so nothing has to
- * invalidate this there; the dashboard and the watch/CLI paths are
+ * invalidate this; the dashboard and the watch/CLI paths are
  * long-running, though, so an edited discount stays invisible to them until
  * restart. Acceptable: a contracted rate changes about never, and re-reading
  * per turn there is exactly the cost this cache exists to avoid.

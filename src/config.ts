@@ -80,9 +80,10 @@ export interface ClauditorUserConfig {
   rotation: {
     enabled: boolean
     /**
-     * @deprecated Use `trigger.peakContext`. Kept because live configs and
-     * the installer message both read it. readConfig keeps the two equal in
-     * both directions, so neither reader can go stale.
+     * @deprecated Use `trigger.peakContext`. Kept because a legacy config
+     * file that still sets this field is honoured through it, resolving as
+     * if it had set trigger.peakContext instead. readConfig keeps the two
+     * equal in both directions, so neither reader can go stale.
      */
     minPeakContext: number
     /** The layered gate that replaced minPeakContext. */
