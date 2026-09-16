@@ -325,3 +325,22 @@ describe('pricingKeyForModel', () => {
     expect(pricingKeyForModel('claude-unreleased-9')).toBeNull()
   })
 })
+
+describe('an empty config', () => {
+  it('prices a real session identically to the hard-coded table', () => {
+    // The whole feature's default state, asserted end to end rather than per
+    // field: an absent config file must produce the numbers the tool produced
+    // before any of this existed.
+    writeUserConfig({})
+    resetPricingCache()
+    const usage = {
+      input_tokens: 12_000,
+      output_tokens: 3_400,
+      cache_creation_input_tokens: 180_000,
+      cache_read_input_tokens: 2_400_000,
+    }
+    const viaConfig = estimateCost(usage, getPricingForModel('claude-opus-5'))
+    const viaTable = estimateCost(usage, MODEL_PRICING['claude-opus-5'])
+    expect(viaConfig).toEqual(viaTable)
+  })
+})
