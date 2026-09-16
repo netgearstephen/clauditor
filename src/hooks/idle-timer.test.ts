@@ -312,6 +312,24 @@ describe('the idle timer', () => {
     expect(events.some((e) => e.message.includes('idle timer stood down'))).toBe(true)
   })
 
+  it('stands down a session that has not cleared the default request floor', async () => {
+    // arm() clears the floor by default so the rest of this file's single-
+    // turn transcripts stay eligible; this test restores the real default to
+    // prove the wiring (the subtraction, the journal read, the resolved
+    // trigger) actually reaches shouldIdleBank rather than always being
+    // cleared before it matters.
+    const { timer, server } = await arm()
+    const cfg = await import('../config.js')
+    cfg.writeConfig({ rotation: { trigger: { minRequestsSinceBank: 20 } } } as never)
+
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('nothing')
+    server.close()
+
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message.includes('too few requests since the last bank'))).toBe(true)
+  })
+
   it('logs a session it declines to wake into a cold cache, so the silence is auditable', async () => {
     const { CACHE_TTL_MS } = await import('../features/journal.js')
     const { timer, server } = await arm({

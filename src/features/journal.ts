@@ -828,7 +828,16 @@ export function shouldBankHandoff(
   } = {}
 ): boolean {
   if (peakContext < gate) return false
-  if (turns - state.bankedAtTurn < minRequestsSinceBank) return false
+
+  // bankedAtTurn belongs to the directory, not the session: a bank another
+  // session made in this repo says nothing about how long this one has been
+  // running, and its turn count may well be higher than ours. Fall back to
+  // zero for it, which is the same measurement a session that has never
+  // banked gets. Clamped rather than trusted bare, since a floor of 0 must
+  // actually disable the rule and a truncated transcript could otherwise
+  // put a session below its own recorded bank turn.
+  const bankedTurn = state.bankedSession === sessionId ? state.bankedAtTurn : 0
+  if (Math.max(0, turns - bankedTurn) < minRequestsSinceBank) return false
 
   // Already banked, in this directory or any other. The one thing that earns a
   // second bank is the session having grown materially since: the document

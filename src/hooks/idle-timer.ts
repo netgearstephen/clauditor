@@ -77,6 +77,11 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
   const peakContext = peakContextTokens(turns)
   const bank = readSessionBank(file.sessionId)
   const state = readJournalState(file.cwd)
+  // state is keyed by directory, not by session: a bank another session made
+  // here says nothing about how long this one has been running. Fall back to
+  // zero for it, the same measurement a session that has never banked gets,
+  // and clamp so a floor of 0 actually disables the rule.
+  const bankedTurn = state.bankedSession === file.sessionId ? state.bankedAtTurn : 0
   return {
     msSinceLastTurn: msSinceLastTurn(file.transcriptPath, now),
     peakContext,
@@ -84,7 +89,7 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
     growthSinceBank: bank ? peakContext - bank.peakContext : 0,
     rotationEnabled: config.rotation.enabled,
     reBankGrowth: config.rotation.reBankGrowth,
-    requestsSinceBank: turns.length - state.bankedAtTurn,
+    requestsSinceBank: Math.max(0, turns.length - bankedTurn),
     minRequestsSinceBank: resolveTrigger(model).minRequestsSinceBank,
     socketExists: socketStillOurs(file),
   }

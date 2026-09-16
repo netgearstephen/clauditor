@@ -365,7 +365,15 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
 
   it('asks on a short session that is already large', () => {
     // The mirror case the waste-factor gate missed: few turns, but a cold
-    // rewrite of this context is exactly what banking avoids.
+    // rewrite of this context is exactly what banking avoids. Twelve turns is
+    // under the default request floor, which exists to hold back a re-bank
+    // fired too soon after the last one, not a session's very first bank, so
+    // it is cleared here to isolate the case this test is actually about.
+    mkdirSync(join(home, '.clauditor'), { recursive: true })
+    writeFileSync(
+      join(home, '.clauditor', 'config.json'),
+      JSON.stringify({ rotation: { trigger: { minRequestsSinceBank: 0 } } })
+    )
     const out = runHook({
       session_id: 'e2e-0011',
       transcript_path: transcriptWithPeak(12, 260_000),
@@ -373,6 +381,28 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
       hook_event_name: 'Stop',
     })
     expect(JSON.parse(out).decision).toBe('block')
+  })
+
+  it('honours a per-model gate override, not just the top-level default', () => {
+    // Proof the resolved trigger is actually consulted: the default gate
+    // (150k) would bank this 260k-peak session, same as the case above. A
+    // per-model override raising the gate for this session's model must
+    // change that verdict, or the Stop hook could be reading a stale
+    // constant while a green suite never noticed.
+    mkdirSync(join(home, '.clauditor'), { recursive: true })
+    writeFileSync(
+      join(home, '.clauditor', 'config.json'),
+      JSON.stringify({
+        rotation: { trigger: { perModel: { 'claude-opus-5': { peakContext: 500_000 } } } },
+      })
+    )
+    const out = runHook({
+      session_id: 'e2e-per-model-gate',
+      transcript_path: transcriptWithPeak(40, 260_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out)).toEqual({})
   })
 
   it('names the peak context it is protecting', () => {

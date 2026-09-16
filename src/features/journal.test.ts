@@ -412,6 +412,25 @@ describe('journal', () => {
       ).toBe(true)
     })
 
+    it('does not measure the floor against another session\'s bank turn', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // bankedAtTurn is per directory, not per session. session-one banked at
+      // its own turn 900; session-two has taken only 300 turns of its own, and
+      // 300 - 900 must not read as "not enough requests have passed".
+      const banked = {
+        lastWriteAt: 0, lastFingerprint: '', bankedAt: 123,
+        bankedAtTurn: 900, bankedSession: 'session-one', promotedAt: 0,
+      }
+      expect(
+        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-two', {
+          now: warm,
+          minRequestsSinceBank: 20,
+          turns: 300,
+        })
+      ).toBe(true)
+    })
+
     it('refuses a second bank after the session changes directory', async () => {
       const j = await importFresh(tempDir)
       const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
