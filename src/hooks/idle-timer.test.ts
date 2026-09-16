@@ -65,6 +65,12 @@ describe('the idle timer', () => {
 
   async function arm(over: Record<string, unknown> = {}) {
     const { timer, w } = await importFresh(tempDir)
+    const cfg = await import('../config.js')
+    // These synthetic transcripts carry a single turn to keep the fixtures
+    // simple, well under the default twenty-request anti-thrash floor, so it
+    // is cleared here. A test after this one that writes its own config (the
+    // stand-down case below) replaces the file outright and this has no say.
+    cfg.writeConfig({ rotation: { trigger: { minRequestsSinceBank: 0 } } } as never)
     // Named for a pid, as Claude Code names them: readInboxAuth finds the
     // session's key file by the pid in its socket path.
     const sockPath = join(tempDir, `${process.pid}.sock`)

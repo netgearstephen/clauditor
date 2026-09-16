@@ -283,6 +283,67 @@ describe('journal', () => {
       const cold = Date.parse('2026-09-08T11:30:00Z')
       expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', { now: cold })).toBe(false)
     })
+
+    it('holds a re-bank back until the request floor has passed', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // Anti-thrash. A session that banked eight requests ago and has grown
+      // enough to qualify again is still thrashing, and the second document
+      // is worth less than the turn it costs.
+      const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 100, bankedSession: 's1', bankedAtPeak: 150_000 }
+      expect(
+        shouldBankHandoff(banked, 220_000, 150_000, path, 's1', {
+          now: warm,
+          reBankGrowth: 50_000,
+          minRequestsSinceBank: 20,
+          turns: 108,
+        })
+      ).toBe(false)
+    })
+
+    it('allows the re-bank once the floor has passed', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 100, bankedSession: 's1', bankedAtPeak: 150_000 }
+      expect(
+        shouldBankHandoff(banked, 220_000, 150_000, path, 's1', {
+          now: warm,
+          reBankGrowth: 50_000,
+          minRequestsSinceBank: 20,
+          turns: 125,
+        })
+      ).toBe(true)
+    })
+
+    it('measures a first bank from turn zero, so a fast session waits', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // bankedAtTurn is 0 for a session that has never banked, so the floor
+      // applies to the session's own request count. Pinned rather than
+      // special-cased: this is what the approved design specifies, and
+      // reaching the gate inside twenty billed requests is rare rather than
+      // impossible, since one user prompt is a mean of 26.6 of them.
+      expect(
+        shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', {
+          now: warm,
+          minRequestsSinceBank: 20,
+          turns: 12,
+        })
+      ).toBe(false)
+      expect(
+        shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', {
+          now: warm,
+          minRequestsSinceBank: 20,
+          turns: 25,
+        })
+      ).toBe(true)
+    })
+
+    it('is unchanged for a caller that passes no floor', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      expect(shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', { now: warm })).toBe(true)
+    })
   })
 
   describe('an unanswered bank request', () => {

@@ -799,19 +799,36 @@ export function peakContextTokens(turns: TurnMetrics[]): number {
  * in a repo, and testing bankedSession alone lets a session that moves
  * directory pay again. The session-keyed ledger answers it in both
  * directions.
+ *
+ * The gate answers whether banking is worth it at all; the floor answers a
+ * different question, whether this session in particular has just banked, so
+ * a second document minutes later would be thrashing rather than reuse. What
+ * is knowable is billed requests since the last bank, since requests
+ * remaining is not, and bankedAtTurn is 0 for a session that has never
+ * banked, so a first bank is measured from the start of the session rather
+ * than special-cased. Defaulted to no floor, so a caller that passes neither
+ * knob behaves exactly as before.
  */
 export function shouldBankHandoff(
   state: JournalState,
   peakContext: number,
-  minPeakContext: number,
+  gate: number,
   transcriptPath: string | null,
   sessionId: string | null,
   {
     now = Date.now(),
     reBankGrowth = Number.POSITIVE_INFINITY,
-  }: { now?: number; reBankGrowth?: number } = {}
+    minRequestsSinceBank = 0,
+    turns = Number.POSITIVE_INFINITY,
+  }: {
+    now?: number
+    reBankGrowth?: number
+    minRequestsSinceBank?: number
+    turns?: number
+  } = {}
 ): boolean {
-  if (peakContext < minPeakContext) return false
+  if (peakContext < gate) return false
+  if (turns - state.bankedAtTurn < minRequestsSinceBank) return false
 
   // Already banked, in this directory or any other. The one thing that earns a
   // second bank is the session having grown materially since: the document

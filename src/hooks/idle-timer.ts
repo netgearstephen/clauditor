@@ -8,6 +8,7 @@ import {
   markUnattendedBank,
   msSinceLastTurn,
   peakContextTokens,
+  readJournalState,
   readSessionBank,
   readTurns,
   recordBankRequest,
@@ -24,6 +25,7 @@ import {
   type IdleBankFacts,
   type IdleTimerFile,
 } from '../features/idle-watchdog.js'
+import { resolveTrigger } from '../features/trigger.js'
 import { isHookEntry } from './shared.js'
 
 /** How often the poller looks at its own file. A stat a minute, no more. */
@@ -71,9 +73,10 @@ export async function awaitOwnArming(
  */
 export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): IdleBankFacts {
   const config = readConfig()
-  const { turns } = readTurns(file.transcriptPath)
+  const { turns, model } = readTurns(file.transcriptPath)
   const peakContext = peakContextTokens(turns)
   const bank = readSessionBank(file.sessionId)
+  const state = readJournalState(file.cwd)
   return {
     msSinceLastTurn: msSinceLastTurn(file.transcriptPath, now),
     peakContext,
@@ -81,6 +84,8 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
     growthSinceBank: bank ? peakContext - bank.peakContext : 0,
     rotationEnabled: config.rotation.enabled,
     reBankGrowth: config.rotation.reBankGrowth,
+    requestsSinceBank: turns.length - state.bankedAtTurn,
+    minRequestsSinceBank: resolveTrigger(model).minRequestsSinceBank,
     socketExists: socketStillOurs(file),
   }
 }
