@@ -40,7 +40,16 @@ export interface IdleBankFacts {
   rotationEnabled: boolean
   /** config.rotation.reBankGrowth. */
   reBankGrowth: number
-  /** Billed requests since this session's last bank, or since it began. */
+  /**
+   * Billed requests since this session's last bank in this directory, else
+   * since it began.
+   *
+   * Not "since its last bank anywhere": bankedAtTurn lives only in the
+   * cwd-keyed journal state, and SessionBank carries no turn count, so a
+   * session that banked in one directory and moved to another reports "since
+   * it began" and the floor is inert for it. Bounded by reBankGrowth, so it
+   * is not a thrash hole.
+   */
   requestsSinceBank: number
   /** The resolved trigger's anti-thrash floor for this session's model. */
   minRequestsSinceBank: number

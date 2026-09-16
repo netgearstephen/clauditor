@@ -33,6 +33,12 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'clauditor-bank-e2e-'))
+    // Sized against the default request floor, not arbitrary: the re-bank
+    // cases bank at 70 turns and grow to 90, so 90 - 70 is exactly 20 and
+    // clears a floor of 20 with nothing to spare (20 < 20 is false, by one
+    // request). Raise the default minRequestsSinceBank above 20
+    // and size these two numbers with it, or they fail for a reason that has
+    // nothing to do with what they are testing.
     transcript = transcriptWithPeak(70, 400_000)
   })
 

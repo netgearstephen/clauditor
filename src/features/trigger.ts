@@ -66,6 +66,11 @@ function warnOnce(dedupeKey: string, message: string): void {
  * Clamping and warning once is the only behaviour that fails loudly. A window
  * that is not known is left unclamped, because clamping against a guess would
  * move a gate the user chose.
+ *
+ * Callers that take modelId from readTurns are passing the session's FIRST
+ * model, not its current one, so a session that switched gets the override
+ * and the window clamp of the model it started on. Inert under the shipped
+ * defaults, where perModel is empty and the gate sits below every window.
  */
 export function resolveTrigger(
   modelId: string | null,
@@ -77,13 +82,31 @@ export function resolveTrigger(
 
   const peakContext = override?.peakContext ?? trigger.peakContext
   const buffer = override?.buffer ?? trigger.buffer
-  const minRequestsSinceBank = override?.minRequestsSinceBank ?? trigger.minRequestsSinceBank
+  const rawFloor = override?.minRequestsSinceBank ?? trigger.minRequestsSinceBank
 
   // The label a warning names the model by. key is the resolved pricing key
   // when there is one; modelId carries an unmatched model through instead of
   // dropping to silence, and there is a label even with no model at all,
   // because a misconfigured gate must be loud whether or not it is keyed.
   const modelLabel = key ?? modelId ?? '(no model)'
+
+  // The floor gets the same treatment as the gate, because it fails the same
+  // way. config performs no coercion, so a hand-edited "abc" reaches
+  // turns - bankedTurn < NaN, which is false and silently removes the floor,
+  // and a negative value is accepted as a no-op. Falling back to 0 fails open
+  // into the previous behaviour: a broken floor must not be able to close
+  // banking off, which is the silent failure this module exists to prevent.
+  let minRequestsSinceBank: number
+  if (Number.isFinite(rawFloor) && rawFloor >= 0) {
+    minRequestsSinceBank = Number(rawFloor)
+  } else {
+    minRequestsSinceBank = 0
+    warnOnce(
+      `floor:${modelLabel}`,
+      `clauditor: the trigger's minRequestsSinceBank for ${modelLabel} is not a number of zero or ` +
+        `more; using a floor of 0 instead, which allows banking as soon as the gate is met.`
+    )
+  }
 
   const rawWanted = peakContext - buffer
   let wanted: number
@@ -108,8 +131,12 @@ export function resolveTrigger(
     wanted = 0
     warnOnce(
       `negative:${modelLabel}`,
-      `clauditor: the trigger's buffer of ${buffer.toLocaleString('en-GB')} exceeds its peakContext ` +
-        `of ${peakContext.toLocaleString('en-GB')} for ${modelLabel}; using a gate of 0 instead.`
+      // Phrased around the resolved gate rather than around the buffer: with a
+      // negative peakContext the buffer is not the culprit, and naming it
+      // sends the reader to the wrong knob.
+      `clauditor: the banking gate for ${modelLabel} resolved to ` +
+        `${rawWanted.toLocaleString('en-GB')} (peakContext ${peakContext.toLocaleString('en-GB')} ` +
+        `minus buffer ${buffer.toLocaleString('en-GB')}); using a gate of 0 instead.`
     )
   } else {
     wanted = rawWanted

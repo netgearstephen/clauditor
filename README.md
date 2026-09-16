@@ -134,12 +134,13 @@ The full design, with the measurements behind each threshold, is in [`docs/super
 
 ## Configuration
 
-One config file at `~/.clauditor/config.json`, created on `clauditor install`:
+One config file at `~/.clauditor/config.json`, created on `clauditor install`. It carries the deprecated `rotation.minPeakContext`, which a fresh install writes at the same value as `rotation.trigger.peakContext`:
 
 ```json
 {
   "rotation": {
     "enabled": true,
+    "minPeakContext": 150000,
     "trigger": {
       "peakContext": 150000,
       "buffer": 0,
@@ -165,12 +166,12 @@ One config file at `~/.clauditor/config.json`, created on `clauditor install`:
 | `rotation.trigger.peakContext` | `150000` | The banking gate. See below |
 | `rotation.trigger.buffer` | `0` | Tokens to fire early by, without moving the gate itself |
 | `rotation.trigger.minRequestsSinceBank` | `20` | Billed requests since the last bank before another one is allowed |
-| `rotation.trigger.perModel` | `{}` | Per-field overrides keyed by model prefix, e.g. `{ "claude-haiku-4-5": { "peakContext": 120000 } }` |
+| `rotation.trigger.perModel` | `{}` | Per-field overrides keyed by model prefix, e.g. `{ "claude-haiku-4-5": { "peakContext": 120000 } }`. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
 | `rotation.minPeakContext` | `150000` | Deprecated alias for `rotation.trigger.peakContext`. See below |
 | `rotation.reBankGrowth` | `50000` | Peak-context growth since the last bank that earns a rewrite. Refreshes 65% of banking sessions, against 34% at 100k |
 | `rotation.blockAfterBank` | `true` | Enforce the wind-down guard after a bank |
 | `pricing.discount` | `0` | Fraction off list price. See below |
-| `pricing.perModel` | `{}` | Per-model discount overrides keyed by model prefix |
+| `pricing.perModel` | `{}` | Per-model discount overrides keyed by model prefix. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
 | `notifications.desktop` | `true` | Desktop notifications for cache issues and idle-timer outcomes |
 
 **Pricing can be discounted, and it changes reporting only.** An enterprise
