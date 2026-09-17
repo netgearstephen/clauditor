@@ -140,10 +140,9 @@ export async function runIdleTimerOnce(
     markBankRequested(sessionId, now)
     // The woken session must not come back to a guard it never armed.
     markUnattendedBank(cwd, sessionId)
-    // Read now, not at arm time: the peerToken is what a detached sender must
-    // present, it lives in the session's key file rather than any hook's
-    // environment, and a session that has exited since arming has taken it
-    // with it, which is the honest signal that there is nothing left to wake.
+    // Read now, not at arm time: the peerToken a detached sender must present lives
+    // in the session's key file, so a session that has exited since arming has taken
+    // it with it, which is the honest signal that there is nothing left to wake.
     const auth = readInboxAuth(file.socketPath)
     const sent =
       auth !== null &&
@@ -153,11 +152,9 @@ export async function runIdleTimerOnce(
         bankInstruction(facts.peakContext, {
           stamp: handoffStamp(),
           now,
-          // The cache dies an hour after the last real turn, not an hour
-          // after this send, and the poller fires five minutes short of
-          // that. So the window the woken turn actually has is whatever is
-          // left of the hour, and it is stated as an absolute time because
-          // the model reading it has no idea how long it sat in the queue.
+          // The cache dies an hour after the last real turn, not this send, and the
+          // poller fires five minutes short. Absolute, because the model reading it
+          // cannot know how long it sat in the queue.
           expiresAt: now - (facts.msSinceLastTurn ?? 0) + CACHE_TTL_MS,
           // The session's OWN bank. Never state.promotedPath: that told a
           // session which had never banked to overwrite another session's
@@ -181,10 +178,9 @@ export async function runIdleTimerOnce(
   }
 
   if (verdict.act === 'notify') {
-    // A parked turn has done work since the last Stop wrote the mechanical
-    // journal, and rewriting it costs nothing: the facts script reads git and
-    // the transcript, never the model. The judgement half is what is being
-    // given up here, not the whole summary.
+    // A parked turn has done work since the last Stop wrote the mechanical journal,
+    // and rewriting it is free: the facts script reads git and the transcript, never
+    // the model. Only the judgement half is given up here.
     if (verdict.reason === 'parked-on-prompt') {
       const cwd = cwdFromTranscript(file.transcriptPath) ?? file.cwd
       try {

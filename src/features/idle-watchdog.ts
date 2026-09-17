@@ -127,13 +127,9 @@ export function shouldIdleBank(facts: IdleBankFacts): IdleBankVerdict {
   if (facts.msSinceLastTurn >= CACHE_TTL_MS) {
     return { act: 'notify', reason: 'cache-cold' }
   }
-  // A parked session is listening and warm, and still cannot take the turn:
-  // its queue holds the wake until a human answers the prompt in front of it.
-  // Sending anyway is worse than not sending, because the message is read
-  // whenever that happens, by which time the cache it was costed against is
-  // usually gone. Not retryable: the poller cannot tell a park that clears in
-  // a minute from one that lasts all night, and the Stop hook at the end of
-  // the answered turn arms a fresh timer either way.
+  // A parked session is warm but cannot take the turn: its queue holds the wake
+  // until a human answers. Final, not retryable: a park clearing in a minute is
+  // indistinguishable from one lasting all night, and the answered turn rearms.
   if (facts.awaitingToolResult) return { act: 'notify', reason: 'parked-on-prompt' }
   return { act: 'bank' }
 }
@@ -499,16 +495,6 @@ export function resolvePollerEntry(here: string): string | null {
   return candidates.find(existsSync) ?? null
 }
 
-/**
- * Start a detached poller, and return its pid or 0.
- *
- * The `error` handler is not optional. An unhandled `error` event on a
- * `ChildProcess` throws, and it throws asynchronously, after the Stop hook has
- * returned and outside its promise chain, where `runHookSafely` cannot catch
- * it: a spawn that fails under resource pressure would take the hook down
- * before it wrote its decision. A zero pid is what the caller sees instead,
- * and the next Stop respawns.
- */
 /** What an arming point has to hand over. Nothing else is read from a hook. */
 export interface ArmRequest {
   sessionId: string
@@ -528,9 +514,9 @@ export interface ArmRequest {
  *
  * Cheap on every call but the first: an existing, live poller is left running
  * and only `firesAt` is rewritten. Killing and respawning a node process per
- * turn would hold roughly 420MB across the sessions typically open here (42MB
- * a poller against 1.2MB for a shell sleeper, times the nine or ten sessions
- * typically open), and pay a spawn and a kill for nothing.
+ * turn would hold roughly 420MB across the nine or ten sessions typically open
+ * here (42MB a poller against 1.2MB for a shell sleeper), and pay a spawn and
+ * a kill for nothing.
  *
  * Called from two events, and it needs both. Stop covers the ordinary case.
  * Notification covers the one Stop cannot see at all: a turn that parks on a
@@ -552,12 +538,11 @@ export function armIdleTimer({ sessionId, transcriptPath, here }: ArmRequest): v
   const existing = readTimerFile(sessionId)
   const alive = existing !== null && isProcessAlive(existing.timerPid)
 
-  // Measured from the last real turn, not from this call. Stop fires within a
-  // moment of a turn ending so the two agree there, but Notification can fire
-  // well into a park, and dating the window from the notification would push
-  // the wake past the cache it exists to catch.
+  // Measured from the last real turn, not this call. Stop fires as a turn ends so
+  // the two agree there, but Notification can fire well into a park, and dating
+  // the window from it would push the wake past the cache it exists to catch.
   const age = msSinceLastTurn(transcriptPath, now)
-  const firesAt = age === null ? now + IDLE_BANK_DELAY_MS : now - age + IDLE_BANK_DELAY_MS
+  const firesAt = now - (age ?? 0) + IDLE_BANK_DELAY_MS
 
   const file = {
     sessionId,
@@ -576,10 +561,9 @@ export function armIdleTimer({ sessionId, transcriptPath, here }: ArmRequest): v
     return
   }
 
-  // The spawn is gated, and only the spawn: a 42MB process asleep for 55
-  // minutes to decide 'nothing' is worth nobody's memory, but the sweep above
-  // has to keep running or turning rotation off would strand every timer file
-  // already on disk.
+  // Gates the spawn alone: a 42MB process asleep for 55 minutes to decide
+  // 'nothing' earns nobody's memory, but the sweep above must keep running or
+  // turning rotation off would strand every timer file already on disk.
   if (!readConfig().rotation.enabled) return
 
   const entry = resolvePollerEntry(here)
@@ -587,6 +571,16 @@ export function armIdleTimer({ sessionId, transcriptPath, here }: ArmRequest): v
   writeTimerFile({ ...file, timerPid: spawnPoller(entry, sessionId) })
 }
 
+/**
+ * Start a detached poller, and return its pid or 0.
+ *
+ * The `error` handler is not optional. An unhandled `error` event on a
+ * `ChildProcess` throws, and it throws asynchronously, after the Stop hook has
+ * returned and outside its promise chain, where `runHookSafely` cannot catch
+ * it: a spawn that fails under resource pressure would take the hook down
+ * before it wrote its decision. A zero pid is what the caller sees instead,
+ * and the next Stop respawns.
+ */
 export function spawnPoller(
   entry: string,
   sessionId: string,

@@ -1005,10 +1005,9 @@ export function bankInstruction(
 ): string {
   const k = peakContext.toLocaleString('en-GB')
 
-  // A re-bank has somewhere to go already: the file the first bank produced,
-  // whose path the user may have pasted somewhere. A first bank does not, and
-  // the name comes from a title only the model knows, so it is given the rule
-  // and the timestamp rather than a finished path.
+  // A re-bank has somewhere to go already, the file the first bank produced and
+  // whose path the user may have pasted somewhere. A first bank gets the rule and
+  // the timestamp instead, its name coming from a title only the model knows.
   const where = rewritePath
     ? `Overwrite this file, which your earlier bank in this session produced, so that a ` +
       `prompt already pasted from it keeps working:\n\n${rewritePath}\n\n`
@@ -1017,14 +1016,9 @@ export function bankInstruction(
       `where <slug> is your title line in lower-case kebab-case, under 40 characters, and ` +
       `${stamp} is used exactly as given.\n\n`
 
-  // A request delivered down the Stop hook is read the moment it is made, so
-  // it needs no deadline. One handed to a live session's inbox does: if the
-  // session is parked on a prompt, the queue holds it until a human answers,
-  // and a wake read two hours later would spend full price on the one thing
-  // the whole feature exists to get cheaply. The model is the only thing in
-  // the chain that knows what time it is when it reads this, so the deadline
-  // is stated to it rather than enforced anywhere else, and it leads, because
-  // everything below it is work not worth starting.
+  // A request read down the Stop hook needs no deadline; one queued to a live
+  // session's inbox does, because a park can hold it for hours and a cold wake
+  // spends full price on the one thing this exists to get cheaply.
   const deadline = expiresAt
     ? `clauditor: this request was queued at ${new Date(now).toISOString()} and is worth ` +
       `acting on only while the cache from that moment is still warm, which it is until ` +

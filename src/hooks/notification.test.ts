@@ -65,10 +65,9 @@ describe('the Notification hook', () => {
   }
 
   it('dates the wake from the last real turn, not from the notification', async () => {
-    // The reason this hook exists at all. A session parks twenty minutes into
-    // its hour and the notification arrives then; arming 55 minutes from the
-    // notification would put the wake 15 minutes past the cache it is meant
-    // to catch.
+    // The reason this hook exists. A session parks twenty minutes into its hour, and
+    // arming 55 minutes from the notification would put the wake 15 minutes past the
+    // cache it is meant to catch.
     const { hook, w } = await importFresh()
     const path = transcript(20 * 60 * 1000)
     existingTimer(w, path)
