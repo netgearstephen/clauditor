@@ -27,17 +27,7 @@ import {
   peakContextTokens,
   writeJournal,
 } from '../features/journal.js'
-import {
-  IDLE_BANK_DELAY_MS,
-  isProcessAlive,
-  readTimerFile,
-  resolveClaudePid,
-  resolvePollerEntry,
-  socketInode,
-  spawnPoller,
-  sweepTimerFiles,
-  writeTimerFile,
-} from '../features/idle-watchdog.js'
+import { armIdleTimer as armSessionTimer } from '../features/idle-watchdog.js'
 import { readStdin, outputDecision, isHookEntry } from './shared.js'
 
 /**
@@ -368,56 +358,19 @@ function captureBankedHandoff(input: StopHookInput): void {
 }
 
 /**
- * Push this session's idle timer out to 55 minutes from now.
+ * Arm this session's idle timer, from the one place a turn's end is known.
  *
- * Cheap on every turn but the first: an existing, live poller is left running
- * and only `firesAt` is rewritten. Killing and respawning a node process per
- * turn would hold roughly 420MB across the sessions typically open here (42MB
- * a poller against 1.2MB for a shell sleeper, times the nine or ten sessions
- * typically open), and pay a spawn and a kill for nothing.
+ * Everything the arming does now lives in idle-watchdog, because Stop is no
+ * longer its only caller: see armIdleTimer. The module directory is resolved
+ * here rather than there, since the poller's path is relative to whichever
+ * entry point is running.
  */
 function armIdleTimer(input: StopHookInput): void {
-  // Anything left behind by a session that was killed goes now: no signal is
-  // guaranteed to arrive, so every stop in every session sweeps.
-  sweepTimerFiles()
-
-  const claude = resolveClaudePid()
-  if (!claude) return
-  if (!input.transcript_path) return
-
-  const now = Date.now()
-  const existing = readTimerFile(input.session_id)
-  const alive = existing !== null && isProcessAlive(existing.timerPid)
-
-  const file = {
+  armSessionTimer({
     sessionId: input.session_id,
-    timerPid: alive ? existing!.timerPid : 0,
-    claudePid: claude.pid,
-    socketPath: claude.socketPath,
-    socketInode: socketInode(claude.socketPath),
-    cwd: cwdFromTranscript(input.transcript_path) ?? process.cwd(),
     transcriptPath: input.transcript_path,
-    armedAt: now,
-    firesAt: now + IDLE_BANK_DELAY_MS,
-  }
-
-  if (alive) {
-    writeTimerFile(file)
-    return
-  }
-
-  // The spawn is gated, and only the spawn: a 42MB process asleep for 55
-  // minutes to decide 'nothing' is worth nobody's memory, but the sweep above
-  // has to keep running or turning rotation off would strand every timer file
-  // already on disk.
-  if (!readConfig().rotation.enabled) return
-
-  // The build is ESM, so there is no __dirname to lean on, and the layout
-  // below `here` depends on which entry point is running: see
-  // resolvePollerEntry. Nothing is written when there is no poller to name.
-  const entry = resolvePollerEntry(dirname(fileURLToPath(import.meta.url)))
-  if (!entry) return
-  writeTimerFile({ ...file, timerPid: spawnPoller(entry, input.session_id) })
+    here: dirname(fileURLToPath(import.meta.url)),
+  })
 }
 
 // Run only when this module is the entry point: see isHookEntry.

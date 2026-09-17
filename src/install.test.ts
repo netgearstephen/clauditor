@@ -45,6 +45,7 @@ describe('installHooks', () => {
     const installed = Object.keys(hooks()).sort()
     expect(installed).toEqual(
       [
+        'Notification',
         'PostCompact',
         'PostToolUse',
         'PreCompact',

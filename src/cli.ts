@@ -1680,6 +1680,19 @@ hookCmd
   })
 
 hookCmd
+  .command('notification')
+  .description('Notification hook handler: arms the idle timer when the session parks')
+  .action(async () => {
+    const { readStdin, runHookSafely } = await import('./hooks/shared.js')
+    const { handleNotificationHook } = await import('./hooks/notification.js')
+    await runHookSafely('notification', async () => {
+      const raw = await readStdin()
+      await handleNotificationHook(JSON.parse(raw))
+      process.stdout.write('{}')
+    })
+  })
+
+hookCmd
   .command('session-end')
   .description('SessionEnd hook handler — stops this session\'s idle timer')
   .action(async () => {

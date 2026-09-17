@@ -1,6 +1,7 @@
 import { readConfig } from '../config.js'
 import { logActivity } from '../features/activity-log.js'
 import {
+  awaitingToolResult,
   bankInstruction,
   cwdFromTranscript,
   handoffStamp,
@@ -14,6 +15,8 @@ import {
   recordBankRequest,
   requestFloorFor,
   requestsSinceBank,
+  writeJournal,
+  CACHE_TTL_MS,
 } from '../features/journal.js'
 import {
   deleteTimerFile,
@@ -93,6 +96,7 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
       resolveTrigger(model).minRequestsSinceBank
     ),
     socketExists: socketStillOurs(file),
+    awaitingToolResult: awaitingToolResult(file.transcriptPath),
   }
 }
 
@@ -136,10 +140,9 @@ export async function runIdleTimerOnce(
     markBankRequested(sessionId, now)
     // The woken session must not come back to a guard it never armed.
     markUnattendedBank(cwd, sessionId)
-    // Read now, not at arm time: the peerToken is what a detached sender must
-    // present, it lives in the session's key file rather than any hook's
-    // environment, and a session that has exited since arming has taken it
-    // with it, which is the honest signal that there is nothing left to wake.
+    // Read now, not at arm time: the peerToken a detached sender must present lives
+    // in the session's key file, so a session that has exited since arming has taken
+    // it with it, which is the honest signal that there is nothing left to wake.
     const auth = readInboxAuth(file.socketPath)
     const sent =
       auth !== null &&
@@ -148,6 +151,11 @@ export async function runIdleTimerOnce(
         auth,
         bankInstruction(facts.peakContext, {
           stamp: handoffStamp(),
+          now,
+          // The cache dies an hour after the last real turn, not this send, and the
+          // poller fires five minutes short. Absolute, because the model reading it
+          // cannot know how long it sat in the queue.
+          expiresAt: now - (facts.msSinceLastTurn ?? 0) + CACHE_TTL_MS,
           // The session's OWN bank. Never state.promotedPath: that told a
           // session which had never banked to overwrite another session's
           // document, and destroyed a real handoff on 2026-09-10.
@@ -170,6 +178,15 @@ export async function runIdleTimerOnce(
   }
 
   if (verdict.act === 'notify') {
+    // A parked turn has done work since the last Stop wrote the mechanical journal,
+    // and rewriting it is free: the facts script reads git and the transcript, never
+    // the model. Only the judgement half is given up here.
+    if (verdict.reason === 'parked-on-prompt') {
+      const cwd = cwdFromTranscript(file.transcriptPath) ?? file.cwd
+      try {
+        writeJournal(sessionId, cwd, readTurns(file.transcriptPath).turns.length)
+      } catch {}
+    }
     await logActivity({
       type: 'context_warning',
       session,

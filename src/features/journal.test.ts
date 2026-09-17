@@ -98,6 +98,84 @@ describe('journal', () => {
     rmSync(tempDir, { recursive: true, force: true })
   })
 
+  describe('awaitingToolResult', () => {
+    const call = (id: string) => ({
+      type: 'assistant',
+      timestamp: '2026-09-16T10:00:00Z',
+      message: { content: [{ type: 'tool_use', id, name: 'Bash', input: {} }] },
+    })
+    const result = (id: string) => ({
+      type: 'user',
+      timestamp: '2026-09-16T10:00:01Z',
+      message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+    })
+    const reply = {
+      type: 'assistant',
+      timestamp: '2026-09-16T10:00:02Z',
+      message: { content: [{ type: 'text', text: 'done' }] },
+    }
+
+    it('reports a transcript that ends on an unanswered tool call', async () => {
+      const { awaitingToolResult } = await importFresh(tempDir)
+      expect(awaitingToolResult(transcriptOf([call('a'), result('a'), call('b')], tempDir))).toBe(
+        true
+      )
+    })
+
+    it('reports nothing when every call in the last turn was answered', async () => {
+      const { awaitingToolResult } = await importFresh(tempDir)
+      expect(
+        awaitingToolResult(transcriptOf([call('a'), result('a'), reply], tempDir))
+      ).toBe(false)
+    })
+
+    it('reports a park when only some of a parallel batch came back', async () => {
+      const { awaitingToolResult } = await importFresh(tempDir)
+      const batch = {
+        type: 'assistant',
+        timestamp: '2026-09-16T10:00:00Z',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'a', name: 'Bash', input: {} },
+            { type: 'tool_use', id: 'b', name: 'Bash', input: {} },
+          ],
+        },
+      }
+      expect(awaitingToolResult(transcriptOf([batch, result('a')], tempDir))).toBe(true)
+    })
+
+    it('ignores an orphan left by an interrupted turn earlier in the session', async () => {
+      // The whole point of reading only the final turn. A session that was
+      // interrupted an hour ago and carried on normally is not parked, and
+      // scanning the file for unmatched ids would say it was for ever.
+      const { awaitingToolResult } = await importFresh(tempDir)
+      expect(
+        awaitingToolResult(
+          transcriptOf([call('orphan'), call('a'), result('a'), reply], tempDir)
+        )
+      ).toBe(false)
+    })
+
+    it('passes over the bookkeeping records Claude Code writes after a turn', async () => {
+      const { awaitingToolResult } = await importFresh(tempDir)
+      expect(
+        awaitingToolResult(
+          transcriptOf(
+            [call('a'), result('a'), reply, { type: 'away_summary', timestamp: 'x' }],
+            tempDir
+          )
+        )
+      ).toBe(false)
+    })
+
+    it('reports nothing for a transcript it cannot read, or a turn with no calls', async () => {
+      const { awaitingToolResult } = await importFresh(tempDir)
+      expect(awaitingToolResult(join(tempDir, 'absent.jsonl'))).toBe(false)
+      expect(awaitingToolResult(null)).toBe(false)
+      expect(awaitingToolResult(transcriptOf([reply], tempDir))).toBe(false)
+    })
+  })
+
   describe('msSinceLastTurn', () => {
     it('measures from the last timestamped record, not the first', async () => {
       const { msSinceLastTurn } = await importFresh(tempDir)
@@ -1161,6 +1239,41 @@ describe('journal', () => {
       expect(text).not.toContain('## Files touched')
       expect(text).not.toContain('## Verification command')
       expect(text).not.toContain('## Required reading')
+    })
+
+    it('states no deadline when the request goes down the Stop hook', async () => {
+      // Stop delivers it the moment it is made, so there is nothing for a
+      // deadline to protect against and a paragraph of it would be noise.
+      const { bankInstruction } = await importFresh(tempDir)
+      const text = bankInstruction(250_000, { stamp: '20260909-1400' })
+      expect(text).not.toContain('queued at')
+      expect(text.startsWith('clauditor: this session peaked')).toBe(true)
+    })
+
+    it('leads with an absolute deadline when the request is queued to an inbox', async () => {
+      // The model reading it is the only thing in the chain that knows what
+      // time it is, and it has no idea how long the message sat in the queue,
+      // so both ends of the window are stated outright.
+      const { bankInstruction, WAKE_EXPIRED } = await importFresh(tempDir)
+      const now = Date.parse('2026-09-16T10:00:00Z')
+      const text = bankInstruction(250_000, {
+        stamp: '20260909-1400',
+        now,
+        expiresAt: now + 5 * 60 * 1000,
+      })
+      expect(text.startsWith('clauditor: this request was queued at')).toBe(true)
+      expect(text).toContain('2026-09-16T10:00:00.000Z')
+      expect(text).toContain('2026-09-16T10:05:00.000Z')
+      expect(text).toContain(WAKE_EXPIRED)
+      // The bank itself still follows, for the case where it arrived in time.
+      expect(text).toContain('## Key decisions and why')
+    })
+
+    it('keeps the expiry reply free of the marker that means a bank happened', async () => {
+      // captureBankedHandoff adopts anything carrying the marker. An expired
+      // wake has no document, so a marker on it would bank an apology.
+      const { WAKE_EXPIRED, BANK_MARKER } = await importFresh(tempDir)
+      expect(WAKE_EXPIRED).not.toContain(BANK_MARKER)
     })
 
     it('states the saving in terms of the context it protects', async () => {

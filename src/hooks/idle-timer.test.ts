@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
@@ -37,6 +37,33 @@ function transcript(dir: string, ageMs: number, peak: number): string {
     },
   ]
   writeFileSync(path, recs.map((r) => JSON.stringify(r)).join('\n'))
+  return path
+}
+
+/**
+ * The same transcript, but ending on a tool call nothing answered: the shape
+ * a session parked on a permission prompt leaves behind.
+ */
+function parkedTranscript(dir: string, ageMs: number, peak: number): string {
+  const path = transcript(dir, ageMs, peak)
+  const ts = new Date(Date.now() - ageMs).toISOString()
+  appendFileSync(
+    path,
+    `\n${JSON.stringify({
+      type: 'assistant',
+      timestamp: ts,
+      message: {
+        model: 'claude-opus-5',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 20,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: peak - 10,
+        },
+        content: [{ type: 'tool_use', id: 'parked', name: 'Bash', input: {} }],
+      },
+    })}`
+  )
   return path
 }
 
@@ -156,6 +183,53 @@ describe('the idle timer', () => {
     server.close()
     expect(JSON.parse(received[0]).type).toBe('auth')
     expect(received[1]).toContain('cheapest moment')
+  })
+
+  it('states a deadline on the wake, measured from the last real turn', async () => {
+    // Without it, a wake queued behind a prompt is read whenever the human
+    // comes back and spends full price on a cache that expired hours ago.
+    const { timer, server, received } = await arm()
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+    const sent = received[1]
+    expect(sent).toContain('this request was queued at')
+    // The transcript's last turn is 56 minutes old against a 60-minute TTL,
+    // so the window the woken turn has is the four minutes left of it.
+    const deadline = Date.parse(sent.match(/until (\S+Z)/)![1])
+    expect(deadline - Date.now()).toBeGreaterThan(3 * 60 * 1000)
+    expect(deadline - Date.now()).toBeLessThanOrEqual(4 * 60 * 1000)
+  })
+
+  it('sends nothing to a session parked on a prompt', async () => {
+    // Warm, large, unbanked and still listening, and none of that helps: the
+    // turn has not ended, so the wake would queue behind whatever the session
+    // is asking its human and be read long after the cache had gone.
+    const { timer, w, server, received } = await arm({
+      transcriptPath: parkedTranscript(tempDir, 56 * 60 * 1000, 300_000),
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('notify')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+    expect(received).toEqual([])
+    expect(w.readTimerFile('idle-1')).toBeNull()
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message.includes('parked-on-prompt'))).toBe(true)
+  })
+
+  it('leaves the bank stamps alone when it stands down on a park', async () => {
+    // The stamps are what stop the session asking again. Writing them for a
+    // request that was never sent would retire banking for a session that is
+    // about to answer its prompt and carry on working.
+    const { timer, server } = await arm({
+      transcriptPath: parkedTranscript(tempDir, 56 * 60 * 1000, 300_000),
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('notify')
+    server.close()
+    const journal = await import('../features/journal.js')
+    expect(journal.readJournalState(CWD).bankRequestedAt).toBe(0)
+    expect(journal.readSessionBank('idle-1')).toBeNull()
   })
 
   it("authenticates with the session's peer token, not the one armed into the file", async () => {

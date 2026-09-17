@@ -537,7 +537,14 @@ describe('Idle timer arming, end to end', () => {
     runHook(input)
     const first = JSON.parse(readFileSync(timerPath, 'utf-8'))
     armedPid = first.timerPid
-    expect(first.firesAt - first.armedAt).toBe(55 * 60 * 1000)
+    // Measured from the last real turn in the transcript, not from the hook,
+    // which is what lets the Notification hook share this arming: it can fire
+    // well into a park, and dating the window from the notification would
+    // push the wake past the cache it exists to catch. Stop fires within a
+    // moment of the turn ending, so here the two are all but the same and the
+    // gap is only however long the hook took to run.
+    expect(first.firesAt - first.armedAt).toBeLessThanOrEqual(55 * 60 * 1000)
+    expect(first.firesAt - first.armedAt).toBeGreaterThan(54 * 60 * 1000)
 
     runHook(input)
     const second = JSON.parse(readFileSync(timerPath, 'utf-8'))
