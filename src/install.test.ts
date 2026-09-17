@@ -93,4 +93,11 @@ describe('installHooks', () => {
 
     expect(commands('PreToolUse')).toEqual(['other-tool check', 'clauditor hook pre-tool-use'])
   })
+
+  it('names the peak gate in the handoff message', async () => {
+    // Install has no model, so the resolved gate is the top-level default,
+    // not a per-model override or a window clamp. 150k pins that default.
+    const messages = await installHooks(claudeDir)
+    expect(messages.join('\n')).toContain('peak context reaches 150k')
+  })
 })

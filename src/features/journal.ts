@@ -544,6 +544,13 @@ export function isCacheWarm(
  *
  * Deliberately minimal: everything else about a session that a summary needs
  * comes from the facts script, not from here.
+ *
+ * The model is the FIRST one the transcript names, not the current one: it is
+ * set once and never revised. A session that switches model mid-way is
+ * therefore keyed to the model it started on, which matters to anyone
+ * resolving per-model configuration from it. Taking the last model seen would
+ * be a one-word change here but would alter the contract for this function's
+ * other callers, so the field says which model it is instead.
  */
 export function readTurns(transcriptPath: string): {
   turns: TurnMetrics[]
@@ -779,6 +786,44 @@ export function peakContextTokens(turns: TurnMetrics[]): number {
 }
 
 /**
+ * Billed requests since this session's own bank, or since it began.
+ *
+ * bankedAtTurn is directory-scoped: a bank another session made in this repo
+ * says nothing about how long this one has run, and its turn count may be
+ * higher than ours, so it falls back to zero. Clamped so that a floor of 0
+ * truly disables the rule and a truncated transcript cannot go negative.
+ *
+ * One function, not one copy per decider: the Stop and idle paths share no
+ * test that would catch two copies drifting apart.
+ */
+export function requestsSinceBank(
+  state: JournalState,
+  sessionId: string | null,
+  turns: number
+): number {
+  return Math.max(0, turns - (state.bankedSession === sessionId ? state.bankedAtTurn : 0))
+}
+
+/**
+ * The request floor that applies to this session: none until it has banked.
+ *
+ * The floor is anti-thrash, and a session that has never banked has nothing
+ * to thrash against. Applying it anyway worked against the gate, which was
+ * lowered to catch sessions earlier while the floor held back precisely the
+ * earliest arrivals: the short but already large session this tool exists
+ * for. Size is the gate's question, and one at the gate has answered it.
+ *
+ * The measurements behind the default of 20 were all taken on re-banks.
+ */
+export function requestFloorFor(
+  state: JournalState,
+  sessionId: string | null,
+  floor: number
+): number {
+  return state.bankedSession === sessionId ? floor : 0
+}
+
+/**
  * Should the judgement half be banked now?
  *
  * Not the waste factor: that is last-five-turn cost over first-five, so it
@@ -789,8 +834,10 @@ export function peakContextTokens(turns: TurnMetrics[]): number {
  * Absolute for a non-obvious reason. Banking costs 0.1x the context and saves
  * the 2x a cold rewrite pays, so size cancels; it enters only because writing
  * costs a fixed ~3k output tokens at 5x, which is what makes a small session a
- * bad bet. Over 1,476 sessions and 87 handoffs, 200k needs an 8.0% reuse rate
- * against 17.6% observed, and is where that margin is widest.
+ * bad bet. The gate itself is config.ts's trigger.peakContext, 150k by
+ * default: over 1,392 sessions, steady-state cost per request is minimised at
+ * 138k and 150k is 0.2% off that. The earlier reuse-margin reading, which put
+ * the widest margin at 200k, was superseded by that cost-per-request one.
  *
  * Warm because cold there is no saving left, and once per session because it
  * spends a turn the user did not ask for. Once per SESSION, not per project
@@ -799,19 +846,42 @@ export function peakContextTokens(turns: TurnMetrics[]): number {
  * in a repo, and testing bankedSession alone lets a session that moves
  * directory pay again. The session-keyed ledger answers it in both
  * directions.
+ *
+ * The gate answers whether banking is worth it at all; the floor answers a
+ * different question, whether this session in particular has just banked, so
+ * a second document minutes later would be thrashing rather than reuse. What
+ * is knowable is billed requests since the last bank, since requests
+ * remaining is not. It does not reach a session's first bank at all: see
+ * requestFloorFor for why, and note that the gate is the size instrument.
+ * Defaulted to no floor, so a caller that passes neither knob behaves
+ * exactly as before.
  */
 export function shouldBankHandoff(
   state: JournalState,
   peakContext: number,
-  minPeakContext: number,
+  gate: number,
   transcriptPath: string | null,
   sessionId: string | null,
   {
     now = Date.now(),
     reBankGrowth = Number.POSITIVE_INFINITY,
-  }: { now?: number; reBankGrowth?: number } = {}
+    minRequestsSinceBank = 0,
+    turns = Number.POSITIVE_INFINITY,
+  }: {
+    now?: number
+    reBankGrowth?: number
+    minRequestsSinceBank?: number
+    turns?: number
+  } = {}
 ): boolean {
-  if (peakContext < minPeakContext) return false
+  if (peakContext < gate) return false
+
+  if (
+    requestsSinceBank(state, sessionId, turns) <
+    requestFloorFor(state, sessionId, minRequestsSinceBank)
+  ) {
+    return false
+  }
 
   // Already banked, in this directory or any other. The one thing that earns a
   // second bank is the session having grown materially since: the document

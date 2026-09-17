@@ -131,8 +131,11 @@ export async function installHooks(claudeDir?: string): Promise<string[]> {
   const { writeConfigIfMissing } = await import('./config.js')
   writeConfigIfMissing()
 
-  const { readConfig } = await import('./config.js')
-  const gate = readConfig().rotation.minPeakContext
+  // No model yet at install time, so this deliberately reports the
+  // top-level default; a per-model override or window clamp only shows up
+  // once a session picks a model, which the dashboard resolves against instead.
+  const { resolveTrigger } = await import('./features/trigger.js')
+  const gate = resolveTrigger(null).gate
   messages.push(
     `Session handoffs: ✓ enabled — banks one warm handoff per session once ` +
     `peak context reaches ${(gate / 1000).toFixed(0)}k. Never blocks.`

@@ -40,6 +40,25 @@ export interface IdleBankFacts {
   rotationEnabled: boolean
   /** config.rotation.reBankGrowth. */
   reBankGrowth: number
+  /**
+   * Billed requests since this session's last bank in this directory, else
+   * since it began.
+   *
+   * Not "since its last bank anywhere": bankedAtTurn lives only in the
+   * cwd-keyed journal state, and SessionBank carries no turn count, so a
+   * session that banked in one directory and moved to another reports "since
+   * it began" and the floor is inert for it. Bounded by reBankGrowth, so it
+   * is not a thrash hole.
+   */
+  requestsSinceBank: number
+  /**
+   * The anti-thrash floor that applies to this session, already resolved.
+   *
+   * Zero until the session has banked once in this directory: the floor is a
+   * re-bank rule, and the resolution happens at gathering time so that
+   * shouldIdleBank stays a plain comparison of two numbers.
+   */
+  minRequestsSinceBank: number
   /** Is the session's inbox socket still there? */
   socketExists: boolean
 }
@@ -79,6 +98,13 @@ export function shouldIdleBank(facts: IdleBankFacts): IdleBankVerdict {
   if (!facts.rotationEnabled) return { act: 'nothing', reason: 'rotation disabled' }
   if (facts.peakContext < RESUME_BREAK_EVEN) {
     return { act: 'nothing', reason: 'below the resume break-even' }
+  }
+  // The same anti-thrash floor the Stop path applies, and terminal for the
+  // same reason the checks below it are: an idle session takes no requests,
+  // so waiting cannot raise the count, and a turn that does land is caught by
+  // the idleness check above before this is ever reached.
+  if (facts.requestsSinceBank < facts.minRequestsSinceBank) {
+    return { act: 'nothing', reason: 'too few requests since the last bank' }
   }
   if (facts.alreadyBanked && facts.growthSinceBank < facts.reBankGrowth) {
     return { act: 'nothing', reason: 'already banked and not materially grown' }

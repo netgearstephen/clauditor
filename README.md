@@ -24,7 +24,7 @@ So the same handoff document costs about twenty times more to write from a cold 
 
 **Nothing blocks the user.** The Stop hook is the single interruption point, and it interrupts the model, not the user, in exactly two cases:
 
-1. **Bank once, warm.** When a session's peak context crosses the banking gate (200k by default) and the cache is still warm, the Stop hook asks the model to write the judgement half of a handoff to `~/.claude/handoffs/<slug>-<timestamp>.md` and reply with a paste-ready prompt. It costs one model turn at read-back rates, and the session carries on afterwards.
+1. **Bank once, warm.** When a session's peak context crosses the banking gate (150k by default) and the cache is still warm, the Stop hook asks the model to write the judgement half of a handoff to `~/.claude/handoffs/<slug>-<timestamp>.md` and reply with a paste-ready prompt. It costs one model turn at read-back rates, and the session carries on afterwards.
 
 2. **Re-bank on drift.** If the session then grows by another 50k of peak context, the same file is overwritten so that a prompt already pasted from it keeps working.
 
@@ -134,15 +134,25 @@ The full design, with the measurements behind each threshold, is in [`docs/super
 
 ## Configuration
 
-One config file at `~/.clauditor/config.json`, created on `clauditor install`:
+One config file at `~/.clauditor/config.json`, created on `clauditor install`. It carries the deprecated `rotation.minPeakContext`, which a fresh install writes at the same value as `rotation.trigger.peakContext`:
 
 ```json
 {
   "rotation": {
     "enabled": true,
-    "minPeakContext": 200000,
+    "minPeakContext": 150000,
+    "trigger": {
+      "peakContext": 150000,
+      "buffer": 0,
+      "minRequestsSinceBank": 20,
+      "perModel": {}
+    },
     "reBankGrowth": 50000,
     "blockAfterBank": true
+  },
+  "pricing": {
+    "discount": 0,
+    "perModel": {}
   },
   "notifications": {
     "desktop": true
@@ -153,10 +163,75 @@ One config file at `~/.clauditor/config.json`, created on `clauditor install`:
 | Setting | Default | Description |
 |---|---|---|
 | `rotation.enabled` | `true` | Bank handoffs and arm idle timers at all |
-| `rotation.minPeakContext` | `200000` | Peak context a session must reach before the judgement half is banked. Over 1,476 sessions and 87 handoffs this is where the margin between required and observed reuse rate is widest |
+| `rotation.trigger.peakContext` | `150000` | The banking gate. See below |
+| `rotation.trigger.buffer` | `0` | Tokens to fire early by, without moving the gate itself |
+| `rotation.trigger.minRequestsSinceBank` | `20` | Billed requests since the last bank before another one is allowed. Re-banks only; a session's first bank is never held back |
+| `rotation.trigger.perModel` | `{}` | Per-field overrides keyed by model prefix, e.g. `{ "claude-haiku-4-5": { "peakContext": 120000 } }`. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
+| `rotation.minPeakContext` | `150000` | Deprecated alias for `rotation.trigger.peakContext`. See below |
 | `rotation.reBankGrowth` | `50000` | Peak-context growth since the last bank that earns a rewrite. Refreshes 65% of banking sessions, against 34% at 100k |
 | `rotation.blockAfterBank` | `true` | Enforce the wind-down guard after a bank |
+| `pricing.discount` | `0` | Fraction off list price. See below |
+| `pricing.perModel` | `{}` | Per-model discount overrides keyed by model prefix. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
 | `notifications.desktop` | `true` | Desktop notifications for cache issues and idle-timer outcomes |
+
+**Pricing can be discounted, and it changes reporting only.** An enterprise
+agreement makes list prices wrong, so `~/.clauditor/config.json` takes a
+fraction off them:
+
+```json
+{
+  "pricing": {
+    "discount": 0,
+    "perModel": { "claude-opus-5": { "discount": 0.04 } }
+  }
+}
+```
+
+Zero by default, which is list price. A per-model entry wins over the
+top-level figure, keyed by model prefix, so `claude-opus-5` covers
+`claude-opus-5[1m]` and every dated snapshot of it. This moves the dollars
+reported and nothing else: a uniform discount scales all five rate classes
+equally, so it cancels out of every ratio the handover decision rests on.
+
+**The banking trigger is four knobs, not one.**
+
+```json
+{
+  "rotation": {
+    "trigger": {
+      "peakContext": 150000,
+      "buffer": 0,
+      "minRequestsSinceBank": 20,
+      "perModel": { "claude-haiku-4-5": { "peakContext": 120000 } }
+    }
+  }
+}
+```
+
+`peakContext` is the gate. 150k, because over 1,392 sessions the steady-state
+cost per request bottoms out at a 138k trigger: 150k is 0.2% off that, the old
+200k default was 4.9% off, and 300k is 20.9% off. It also leaves headroom below
+auto-compact. `buffer` fires early without moving the gate the measurements
+were taken against. `minRequestsSinceBank` stops a session that has just banked
+from banking again the moment it has grown enough to qualify; a request here is
+one billed API request, of which a single prompt is a mean of 26.6. It applies
+to a re-bank only. A session that has never banked has nothing to thrash
+against, and holding it back would work against the gate: the gate exists to
+catch sessions earlier, while a floor on first banks holds back precisely the
+earliest arrivals, which is the short but already large session (one that
+pastes a document, or resumes with a big handoff) this tool exists for. Size is
+the gate's question, and a session at the gate has already answered it.
+
+A gate above the model's context window is not a late gate, it is no gate: the
+peak never reaches it and banking goes quiet. Where the window is known, the
+gate is clamped to nine tenths of it and says so once.
+
+`rotation.minPeakContext` still works as an alias for `trigger.peakContext`,
+but `trigger.peakContext` wins if both are set. This matters because a fresh
+`clauditor install` writes both keys to the same value: hand-editing the
+deprecated `minPeakContext` afterwards is then a silent no-op, since the
+resolved gate keeps coming from `trigger.peakContext` regardless. Set
+`rotation.trigger.peakContext` for a gate that actually moves.
 
 The idle timer's 55-minute delay and 65k arming floor are constants, not config: they are derived from the cache TTL and the measured entry cost of a handoff, and there is nothing to tune until that research changes.
 

@@ -10,6 +10,7 @@ import type {
 import { createHash } from 'node:crypto'
 import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
+import { resolveTrigger } from '../features/trigger.js'
 import {
   BANK_MARKER,
   adoptBankedHandoff,
@@ -258,7 +259,7 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
   if (!config.rotation.enabled) return null
 
   const cwd = cwdFromTranscript(input.transcript_path)
-  const { turns } = readTurns(input.transcript_path)
+  const { turns, model } = readTurns(input.transcript_path)
 
   // The mechanical half. A script over git and the transcript, no model, so
   // it runs on every Stop that changed anything and costs nothing to keep
@@ -269,15 +270,20 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
 
   const state = readJournalState(cwd)
   const peakContext = peakContextTokens(turns)
+  const trigger = resolveTrigger(model)
 
   if (
     !shouldBankHandoff(
       state,
       peakContext,
-      config.rotation.minPeakContext,
+      trigger.gate,
       input.transcript_path,
       input.session_id,
-      { reBankGrowth: config.rotation.reBankGrowth }
+      {
+        reBankGrowth: config.rotation.reBankGrowth,
+        minRequestsSinceBank: trigger.minRequestsSinceBank,
+        turns: turns.length,
+      }
     )
   ) {
     return null

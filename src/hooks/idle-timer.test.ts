@@ -65,6 +65,12 @@ describe('the idle timer', () => {
 
   async function arm(over: Record<string, unknown> = {}) {
     const { timer, w } = await importFresh(tempDir)
+    const cfg = await import('../config.js')
+    // These synthetic transcripts carry a single turn to keep the fixtures
+    // simple, well under the default twenty-request anti-thrash floor, so it
+    // is cleared here. A test after this one that writes its own config (the
+    // stand-down case below) replaces the file outright and this has no say.
+    cfg.writeConfig({ rotation: { trigger: { minRequestsSinceBank: 0 } } } as never)
     // Named for a pid, as Claude Code names them: readInboxAuth finds the
     // session's key file by the pid in its socket path.
     const sockPath = join(tempDir, `${process.pid}.sock`)
@@ -304,6 +310,35 @@ describe('the idle timer', () => {
     const activity = await import('../features/activity-log.js')
     const events = await activity.readActivity()
     expect(events.some((e) => e.message.includes('idle timer stood down'))).toBe(true)
+  })
+
+  it('stands down a session that has not cleared the default request floor', async () => {
+    // arm() clears the floor by default so the rest of this file's single-
+    // turn transcripts stay eligible; this test restores the real default to
+    // prove the wiring (the subtraction, the journal read, the resolved
+    // trigger) actually reaches shouldIdleBank rather than always being
+    // cleared before it matters.
+    const { timer, server } = await arm()
+    const cfg = await import('../config.js')
+    cfg.writeConfig({ rotation: { trigger: { minRequestsSinceBank: 20 } } } as never)
+
+    // The floor only reaches a session that has banked here before, so this
+    // one is given a bank of its own to be held back from. Without it the
+    // floor resolves to zero and the wiring under test is never exercised.
+    const journal = await import('../features/journal.js')
+    journal.writeJournalState(CWD, {
+      ...journal.readJournalState(CWD),
+      bankedAt: Date.now(),
+      bankedAtTurn: 0,
+      bankedSession: 'idle-1',
+    })
+
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('nothing')
+    server.close()
+
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message.includes('too few requests since the last bank'))).toBe(true)
   })
 
   it('logs a session it declines to wake into a cold cache, so the silence is auditable', async () => {

@@ -283,6 +283,67 @@ describe('journal', () => {
       const cold = Date.parse('2026-09-08T11:30:00Z')
       expect(shouldBankHandoff(fresh, 400_000, 200_000, path, 's1', { now: cold })).toBe(false)
     })
+
+    it('holds a re-bank back until the request floor has passed', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // Anti-thrash. A session that banked eight requests ago and has grown
+      // enough to qualify again is still thrashing, and the second document
+      // is worth less than the turn it costs.
+      const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 100, bankedSession: 's1', bankedAtPeak: 150_000 }
+      expect(
+        shouldBankHandoff(banked, 220_000, 150_000, path, 's1', {
+          now: warm,
+          reBankGrowth: 50_000,
+          minRequestsSinceBank: 20,
+          turns: 108,
+        })
+      ).toBe(false)
+    })
+
+    it('allows the re-bank once the floor has passed', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      const banked = { ...fresh, bankedAt: 123, bankedAtTurn: 100, bankedSession: 's1', bankedAtPeak: 150_000 }
+      expect(
+        shouldBankHandoff(banked, 220_000, 150_000, path, 's1', {
+          now: warm,
+          reBankGrowth: 50_000,
+          minRequestsSinceBank: 20,
+          turns: 125,
+        })
+      ).toBe(true)
+    })
+
+    it('exempts a first bank from the floor, however few requests it has taken', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // Twelve requests, under the floor of twenty, and past the gate. The
+      // floor is anti-thrash and this session has never banked, so there is
+      // nothing to thrash against; holding it back works against the gate.
+      expect(
+        shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', {
+          now: warm,
+          minRequestsSinceBank: 20,
+          turns: 12,
+        })
+      ).toBe(true)
+      // Even at one request, so the exemption is the rule and not an
+      // off-by-one that a slightly longer session would fall through.
+      expect(
+        shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', {
+          now: warm,
+          minRequestsSinceBank: 20,
+          turns: 1,
+        })
+      ).toBe(true)
+    })
+
+    it('is unchanged for a caller that passes no floor', async () => {
+      const { shouldBankHandoff } = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      expect(shouldBankHandoff(fresh, 200_000, 150_000, path, 's1', { now: warm })).toBe(true)
+    })
   })
 
   describe('an unanswered bank request', () => {
@@ -348,6 +409,25 @@ describe('journal', () => {
       }
       expect(
         j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-two', { now: warm })
+      ).toBe(true)
+    })
+
+    it('does not measure the floor against another session\'s bank turn', async () => {
+      const j = await importFresh(tempDir)
+      const path = transcriptWith(['2026-09-08T10:00:00Z'], tempDir)
+      // bankedAtTurn is per directory, not per session. session-one banked at
+      // its own turn 900; session-two has taken only 300 turns of its own, and
+      // 300 - 900 must not read as "not enough requests have passed".
+      const banked = {
+        lastWriteAt: 0, lastFingerprint: '', bankedAt: 123,
+        bankedAtTurn: 900, bankedSession: 'session-one', promotedAt: 0,
+      }
+      expect(
+        j.shouldBankHandoff(banked, 400_000, 200_000, path, 'session-two', {
+          now: warm,
+          minRequestsSinceBank: 20,
+          turns: 300,
+        })
       ).toBe(true)
     })
 

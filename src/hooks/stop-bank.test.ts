@@ -33,6 +33,9 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'clauditor-bank-e2e-'))
+    // Sized against the default request floor: the re-bank cases bank at 70
+    // and grow to 90, clearing a floor of 20 with nothing to spare. Raise the
+    // default above 20 and these numbers must move with it.
     transcript = transcriptWithPeak(70, 400_000)
   })
 
@@ -365,7 +368,8 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
 
   it('asks on a short session that is already large', () => {
     // The mirror case the waste-factor gate missed: few turns, but a cold
-    // rewrite of this context is exactly what banking avoids.
+    // rewrite of this context is what banking avoids. No config is written,
+    // so it is also the evidence that a first bank is exempt from the floor.
     const out = runHook({
       session_id: 'e2e-0011',
       transcript_path: transcriptWithPeak(12, 260_000),
@@ -373,6 +377,52 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
       hook_event_name: 'Stop',
     })
     expect(JSON.parse(out).decision).toBe('block')
+  })
+
+  it('holds a re-bank back under the shipped default floor', () => {
+    // The only Stop-path test that resolves the shipped default. Banks at
+    // turn 70, returns five requests later having grown 160k, past the 50k
+    // that earns a re-bank: only the floor can be refusing it.
+    const request = {
+      session_id: 'e2e-0011b',
+      transcript_path: transcript,
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    }
+    runHook(request)
+    const written = join(home, '.claude', 'handoffs', 'first-20260909-1400.md')
+    mkdirSync(dirname(written), { recursive: true })
+    writeFileSync(written, `# Handoff: First\n\n## Mission\nAt 400k.\n${'x'.repeat(200)}\n`)
+    runHook({
+      ...request,
+      stop_hook_active: true,
+      last_assistant_message: `Read \`${written}\`\n[clauditor-banked-handoff]`,
+    })
+
+    const grown = transcriptWithPeak(75, 560_000)
+    expect(JSON.parse(runHook({ ...request, transcript_path: grown }))).toEqual({})
+  }, 30_000)
+
+  it('honours a per-model gate override, not just the top-level default', () => {
+    // Proof the resolved trigger is actually consulted: the default gate
+    // (150k) would bank this 260k-peak session, same as the case above. A
+    // per-model override raising the gate for this session's model must
+    // change that verdict, or the Stop hook could be reading a stale
+    // constant while a green suite never noticed.
+    mkdirSync(join(home, '.clauditor'), { recursive: true })
+    writeFileSync(
+      join(home, '.clauditor', 'config.json'),
+      JSON.stringify({
+        rotation: { trigger: { perModel: { 'claude-opus-5': { peakContext: 500_000 } } } },
+      })
+    )
+    const out = runHook({
+      session_id: 'e2e-per-model-gate',
+      transcript_path: transcriptWithPeak(40, 260_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out)).toEqual({})
   })
 
   it('names the peak context it is protecting', () => {

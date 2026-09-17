@@ -20,6 +20,8 @@ const eligible: IdleBankFacts = {
   growthSinceBank: 0,
   rotationEnabled: true,
   reBankGrowth: 100_000,
+  requestsSinceBank: 1_000,
+  minRequestsSinceBank: 0,
   socketExists: true,
 }
 
@@ -108,6 +110,31 @@ describe('shouldIdleBank', () => {
     expect(
       shouldIdleBank({ ...eligible, socketExists: false, peakContext: 10_000 }).act
     ).toBe('nothing')
+  })
+
+  it('stands down when too few requests have passed since the last bank', () => {
+    const v = shouldIdleBank({
+      ...eligible,
+      alreadyBanked: true,
+      growthSinceBank: 80_000,
+      requestsSinceBank: 4,
+      minRequestsSinceBank: 20,
+    })
+    expect(v).toEqual({ act: 'nothing', reason: 'too few requests since the last bank' })
+  })
+
+  it('does not mark the request floor retryable', () => {
+    // Waiting cannot add requests to a session that is idle by definition,
+    // and if a turn does land the earlier idleness check catches it first. A
+    // retry here would be a poller kept alive for a verdict that cannot move.
+    const v = shouldIdleBank({ ...eligible, requestsSinceBank: 1, minRequestsSinceBank: 20 })
+    expect(v.retry).toBeUndefined()
+  })
+
+  it('banks once the floor is met', () => {
+    expect(
+      shouldIdleBank({ ...eligible, requestsSinceBank: 40, minRequestsSinceBank: 20 })
+    ).toEqual({ act: 'bank' })
   })
 })
 

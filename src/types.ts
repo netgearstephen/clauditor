@@ -166,6 +166,17 @@ export interface PricingConfig {
   /** 1-hour TTL cache write: 2x base input. Claude Code uses this TTL. */
   cacheCreation1hPerMillion: number
   cacheReadPerMillion: number
+  /**
+   * Context window, in tokens. Not a price, and here anyway: it is resolved
+   * by the same longest-prefix model key as the rates, and a second table
+   * keyed the same way would be a second place to get that rule wrong.
+   *
+   * Optional, and absent means "unknown", not "unlimited". Only the windows
+   * that are known for certain are set, because the one consumer is the
+   * trigger clamp and clamping a user's configured gate against a guessed
+   * window would be worse than not clamping at all.
+   */
+  windowTokens?: number
 }
 
 export interface AlertConfig {
@@ -247,6 +258,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheCreationPerMillion: 12.5,
     cacheCreation1hPerMillion: 20,
     cacheReadPerMillion: 0.25, // 0.025x - Fable 5.1 only
+    windowTokens: 1_000_000,
   },
   'claude-fable-5': {
     model: 'claude-fable-5',
@@ -263,6 +275,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheCreationPerMillion: 6.25,
     cacheCreation1hPerMillion: 10,
     cacheReadPerMillion: 0.5,
+    windowTokens: 1_000_000,
   },
   'claude-opus-4-8': {
     model: 'claude-opus-4-8',
@@ -295,6 +308,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheCreationPerMillion: 2.5,
     cacheCreation1hPerMillion: 4,
     cacheReadPerMillion: 0.2,
+    windowTokens: 1_000_000,
   },
   'claude-sonnet-4-6': {
     model: 'claude-sonnet-4-6',
@@ -303,6 +317,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheCreationPerMillion: 3.75,
     cacheCreation1hPerMillion: 6,
     cacheReadPerMillion: 0.3,
+    windowTokens: 1_000_000,
   },
   'claude-haiku-4-5': {
     model: 'claude-haiku-4-5',
@@ -311,6 +326,7 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheCreationPerMillion: 1.25,
     cacheCreation1hPerMillion: 2,
     cacheReadPerMillion: 0.1,
+    windowTokens: 200_000,
   },
 }
 

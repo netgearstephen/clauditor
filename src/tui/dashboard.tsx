@@ -3,7 +3,7 @@ import { Box, Text } from 'ink'
 import type { SessionState } from '../types.js'
 import { estimateCost, getPricingForModel } from '../features/cost-tracker.js'
 import { peakContextTokens } from '../features/journal.js'
-import { readConfig } from '../config.js'
+import { resolveTrigger } from '../features/trigger.js'
 
 interface DashboardProps {
   session: SessionState
@@ -16,13 +16,18 @@ export function Dashboard({ session }: DashboardProps) {
 
   // Peak context against the banking gate. Peak rather than current, because
   // a session that compacts drops back down while the cold rewrite a handoff
-  // avoids is still priced on the high-water mark.
+  // avoids is still priced on the high-water mark. Resolved against this
+  // session's model, so a per-model override and the window clamp show up in
+  // the bar rather than only in the decision.
   const peak = peakContextTokens(session.turns)
-  const gate = readConfig().rotation.minPeakContext
+  const gate = resolveTrigger(session.model ?? null).gate
   const banked = peak >= gate
 
   const barWidth = 30
-  const filled = Math.round(Math.min(1, peak / gate) * barWidth)
+  // resolveTrigger allows a gate of 0 (a buffer over the peak), and dividing
+  // by it gives Infinity, or NaN when the peak is 0 too. String.repeat
+  // coerces NaN to 0, so the bar would render blank rather than full.
+  const filled = Math.round(Math.min(1, peak / Math.max(1, gate)) * barWidth)
   const peakBar = '█'.repeat(filled) + '░'.repeat(barWidth - filled)
   const barColor = banked ? 'green' : peak >= gate * 0.7 ? 'yellow' : 'blue'
 
