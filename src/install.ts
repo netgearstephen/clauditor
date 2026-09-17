@@ -70,6 +70,13 @@ const CLAUDITOR_HOOKS: Record<string, HookEventConfig> = {
     matcher: '',
     hooks: [{ type: 'command', command: getHookCommand('session-end') }],
   },
+  // The only event that fires when a turn parks waiting for a human. Stop
+  // never does, so without this a session that parks has no idle timer: see
+  // handleNotificationHook.
+  Notification: {
+    matcher: '',
+    hooks: [{ type: 'command', command: getHookCommand('notification') }],
+  },
 }
 
 const CLAUDITOR_MARKER = 'clauditor hook'

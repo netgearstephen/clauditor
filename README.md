@@ -45,7 +45,11 @@ in full before doing anything else. Then summarise your understanding back to me
 3 to 5 bullets and confirm the very next step. ...
 ```
 
-**Idle sessions are woken to bank.** A session left open and idle would lose its cache without ever banking. The Stop hook arms a detached one-shot timer per session; at 55 minutes of idleness it wakes the session over its own inbox socket and asks it to bank, while the cache is still warm. A woken bank never arms the wind-down guard, so a session you come back to is still working normally. If the socket has gone or the cache is already cold, it notifies instead and spends nothing.
+**Idle sessions are woken to bank.** A session left open and idle would lose its cache without ever banking. The timer is a detached one-shot per session, armed by the Stop hook at the end of every turn and by the Notification hook when a turn parks on a permission prompt or a question. Stop cannot cover that second case: a parked turn has not ended, so no Stop fires for it, and a session that parks before its first Stop has no timer at all. Both arming points measure the window from the last real turn in the transcript, not from the hook that armed it.
+
+At 55 minutes of idleness the timer wakes the session over its own inbox socket and asks it to bank, while the cache is still warm. A woken bank never arms the wind-down guard, so a session you come back to is still working normally. Three things stand it down instead, and none of them spends anything: the socket has gone, the cache is already cold, or the transcript ends on a tool call nothing answered. The last of those is a session parked on a prompt, and it cannot take the turn: the wake would sit in its queue behind whatever it is asking you, and be read whenever you got back, usually long after the cache it was costed against had gone. The mechanical half gets rewritten for it and the judgement half is given up.
+
+The wake carries its own deadline for the same reason. It names the time it was queued and the time the cache expires, and tells the model to write nothing if it is reading the message too late.
 
 **Resuming costs no model turn.** When a new session starts in a project with a banked handoff, SessionStart shows the resume prompt to the *user* as a system message. The model never reads the handoff until you paste the prompt, so the advisory itself is free:
 

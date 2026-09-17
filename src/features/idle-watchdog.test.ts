@@ -23,6 +23,7 @@ const eligible: IdleBankFacts = {
   requestsSinceBank: 1_000,
   minRequestsSinceBank: 0,
   socketExists: true,
+  awaitingToolResult: false,
 }
 
 describe('shouldIdleBank', () => {
@@ -103,6 +104,40 @@ describe('shouldIdleBank', () => {
       act: 'notify',
       reason: 'session-gone',
     })
+  })
+
+  it('notifies rather than banks a session parked on a prompt', () => {
+    // Listening, warm, large and still unable to take the turn: the wake
+    // would sit in the queue behind the prompt until a human answered it,
+    // which is usually long after the cache it was costed against has gone.
+    expect(shouldIdleBank({ ...eligible, awaitingToolResult: true })).toEqual({
+      act: 'notify',
+      reason: 'parked-on-prompt',
+    })
+  })
+
+  it('treats a park as final, so the timer is not left spinning on it', () => {
+    // The poller cannot tell a park that clears in a minute from one that
+    // lasts all night, and the Stop at the end of the answered turn arms a
+    // fresh timer either way.
+    expect(shouldIdleBank({ ...eligible, awaitingToolResult: true }).act).not.toBe('nothing')
+  })
+
+  it('reads an absent park flag as not parked, for facts written before it', () => {
+    const { awaitingToolResult: _omitted, ...withoutFlag } = eligible
+    expect(shouldIdleBank(withoutFlag)).toEqual({ act: 'bank' })
+  })
+
+  it('prefers the cold-cache verdict over the park, since neither can bank', () => {
+    // Both stand the bank down; cache-cold is the one the user can act on by
+    // starting a fresh session, so it is the one reported.
+    expect(
+      shouldIdleBank({
+        ...eligible,
+        awaitingToolResult: true,
+        msSinceLastTurn: 61 * 60 * 1000,
+      })
+    ).toEqual({ act: 'notify', reason: 'cache-cold' })
   })
 
   it('says nothing about a small session whose socket has gone', () => {

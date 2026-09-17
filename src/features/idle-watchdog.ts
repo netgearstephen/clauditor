@@ -13,8 +13,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { connect } from 'node:net'
-import { CACHE_TTL_MS } from './journal.js'
+import { CACHE_TTL_MS, cwdFromTranscript, msSinceLastTurn } from './journal.js'
 import { RESUME_BREAK_EVEN } from './resume-advisory.js'
+import { readConfig } from '../config.js'
 
 /**
  * How long a session must sit idle before its handoff is banked unasked.
@@ -61,11 +62,21 @@ export interface IdleBankFacts {
   minRequestsSinceBank: number
   /** Is the session's inbox socket still there? */
   socketExists: boolean
+  /**
+   * Does the transcript end on a tool call nothing answered?
+   *
+   * True while the session is parked on a permission prompt or a question, or
+   * while a tool is still running: in every one of those cases the turn has
+   * not ended and a wake would be queued rather than read. Optional, because
+   * the facts are gathered by a poller that may predate this field, and
+   * absence has to mean "not known to be parked" rather than "parked".
+   */
+  awaitingToolResult?: boolean
 }
 
 export type IdleBankVerdict =
   | { act: 'bank' }
-  | { act: 'notify'; reason: 'cache-cold' | 'session-gone' }
+  | { act: 'notify'; reason: 'cache-cold' | 'session-gone' | 'parked-on-prompt' }
   /**
    * `retry` marks the one stand-down that waiting can change.
    *
@@ -116,6 +127,14 @@ export function shouldIdleBank(facts: IdleBankFacts): IdleBankVerdict {
   if (facts.msSinceLastTurn >= CACHE_TTL_MS) {
     return { act: 'notify', reason: 'cache-cold' }
   }
+  // A parked session is listening and warm, and still cannot take the turn:
+  // its queue holds the wake until a human answers the prompt in front of it.
+  // Sending anyway is worse than not sending, because the message is read
+  // whenever that happens, by which time the cache it was costed against is
+  // usually gone. Not retryable: the poller cannot tell a park that clears in
+  // a minute from one that lasts all night, and the Stop hook at the end of
+  // the answered turn arms a fresh timer either way.
+  if (facts.awaitingToolResult) return { act: 'notify', reason: 'parked-on-prompt' }
   return { act: 'bank' }
 }
 
@@ -490,6 +509,84 @@ export function resolvePollerEntry(here: string): string | null {
  * before it wrote its decision. A zero pid is what the caller sees instead,
  * and the next Stop respawns.
  */
+/** What an arming point has to hand over. Nothing else is read from a hook. */
+export interface ArmRequest {
+  sessionId: string
+  transcriptPath: string | null | undefined
+  /**
+   * The calling module's own directory.
+   *
+   * Passed in rather than derived here, because resolvePollerEntry probes a
+   * layout relative to the entry point that is running, and this module sits
+   * in a different place in each of the two live layouts.
+   */
+  here: string
+}
+
+/**
+ * Push this session's idle timer out to 55 minutes past its last real turn.
+ *
+ * Cheap on every call but the first: an existing, live poller is left running
+ * and only `firesAt` is rewritten. Killing and respawning a node process per
+ * turn would hold roughly 420MB across the sessions typically open here (42MB
+ * a poller against 1.2MB for a shell sleeper, times the nine or ten sessions
+ * typically open), and pay a spawn and a kill for nothing.
+ *
+ * Called from two events, and it needs both. Stop covers the ordinary case.
+ * Notification covers the one Stop cannot see at all: a turn that parks on a
+ * permission prompt or a question has not ended, so no Stop fires for it, and
+ * a session that parks before its first Stop has no poller, no timer file and
+ * no wake.
+ */
+export function armIdleTimer({ sessionId, transcriptPath, here }: ArmRequest): void {
+  // Anything left behind by a session that was killed goes now: no signal is
+  // guaranteed to arrive, so every arming in every session sweeps.
+  sweepTimerFiles()
+
+  if (!sessionId) return
+  const claude = resolveClaudePid()
+  if (!claude) return
+  if (!transcriptPath) return
+
+  const now = Date.now()
+  const existing = readTimerFile(sessionId)
+  const alive = existing !== null && isProcessAlive(existing.timerPid)
+
+  // Measured from the last real turn, not from this call. Stop fires within a
+  // moment of a turn ending so the two agree there, but Notification can fire
+  // well into a park, and dating the window from the notification would push
+  // the wake past the cache it exists to catch.
+  const age = msSinceLastTurn(transcriptPath, now)
+  const firesAt = age === null ? now + IDLE_BANK_DELAY_MS : now - age + IDLE_BANK_DELAY_MS
+
+  const file = {
+    sessionId,
+    timerPid: alive ? existing!.timerPid : 0,
+    claudePid: claude.pid,
+    socketPath: claude.socketPath,
+    socketInode: socketInode(claude.socketPath),
+    cwd: cwdFromTranscript(transcriptPath) ?? process.cwd(),
+    transcriptPath,
+    armedAt: now,
+    firesAt,
+  }
+
+  if (alive) {
+    writeTimerFile(file)
+    return
+  }
+
+  // The spawn is gated, and only the spawn: a 42MB process asleep for 55
+  // minutes to decide 'nothing' is worth nobody's memory, but the sweep above
+  // has to keep running or turning rotation off would strand every timer file
+  // already on disk.
+  if (!readConfig().rotation.enabled) return
+
+  const entry = resolvePollerEntry(here)
+  if (!entry) return
+  writeTimerFile({ ...file, timerPid: spawnPoller(entry, sessionId) })
+}
+
 export function spawnPoller(
   entry: string,
   sessionId: string,

@@ -524,6 +524,67 @@ export function msSinceLastTurn(
   return null
 }
 
+/** Just enough of a content block to answer the question below. */
+interface TailBlock {
+  type?: string
+  id?: string
+  tool_use_id?: string
+}
+
+/**
+ * Does the transcript end on a tool call that nothing ever answered?
+ *
+ * Two situations produce that shape, and both mean the same thing here: the
+ * session is parked on a permission prompt or a question waiting for a human,
+ * or a tool is still running. Either way the turn has not ended, so there is
+ * no boundary to deliver a wake into. A message sent now sits in the queue
+ * until somebody comes back, which may be long after the cache it was meant
+ * to exploit has gone.
+ *
+ * Only the final turn is examined, never the whole transcript. An interrupted
+ * turn from an hour ago leaves an orphaned id behind too, and a session that
+ * carried on normally afterwards is not parked on anything.
+ */
+export function awaitingToolResult(transcriptPath: string | null): boolean {
+  if (!transcriptPath) return false
+  let content: string
+  try {
+    content = readFileSync(transcriptPath, 'utf-8')
+  } catch {
+    return false
+  }
+  const lines = content.split('\n')
+  const answered = new Set<string>()
+  // Backwards, collecting results until the assistant record that made the
+  // calls: everything a given call could be answered by lies after it.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    let record: { type?: string; message?: { content?: unknown } }
+    try {
+      record = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const blocks: TailBlock[] = Array.isArray(record.message?.content)
+      ? (record.message.content as TailBlock[])
+      : []
+    if (record.type === 'user') {
+      for (const block of blocks) {
+        if (block?.type === 'tool_result' && block.tool_use_id) answered.add(block.tool_use_id)
+      }
+      continue
+    }
+    if (record.type !== 'assistant') continue
+    const calls = blocks.filter((block) => block?.type === 'tool_use' && block.id)
+    // A text-only assistant record is part of the same turn as the calls
+    // below it, so it is passed over rather than taken as the end of one.
+    if (calls.length === 0) continue
+    return calls.some((block) => !answered.has(block.id as string))
+  }
+  return false
+}
+
 /**
  * Is the prompt cache still alive?
  *
@@ -706,6 +767,17 @@ export function writeJournal(
 
 /** Marker Claude appends so the Stop hook can recognise its own banked reply. */
 export const BANK_MARKER = '[clauditor-banked-handoff]'
+
+/**
+ * What a woken session replies when it reads the wake too late.
+ *
+ * Deliberately without BANK_MARKER: the marker is what tells the Stop hook a
+ * bank request was answered with a document, and there is no document here.
+ * The request stamp stays where it is, so the session does not ask again,
+ * which is right. Once the cache is cold the honest answer is to spend
+ * nothing and let SessionStart offer the mechanical half to the next session.
+ */
+export const WAKE_EXPIRED = 'clauditor: wake expired, nothing banked'
 
 /**
  * Where a banked judgement came from.
@@ -927,7 +999,9 @@ export function bankInstruction(
   {
     stamp,
     rewritePath = '',
-  }: { stamp: string; rewritePath?: string }
+    expiresAt,
+    now = Date.now(),
+  }: { stamp: string; rewritePath?: string; expiresAt?: number; now?: number }
 ): string {
   const k = peakContext.toLocaleString('en-GB')
 
@@ -943,7 +1017,26 @@ export function bankInstruction(
       `where <slug> is your title line in lower-case kebab-case, under 40 characters, and ` +
       `${stamp} is used exactly as given.\n\n`
 
+  // A request delivered down the Stop hook is read the moment it is made, so
+  // it needs no deadline. One handed to a live session's inbox does: if the
+  // session is parked on a prompt, the queue holds it until a human answers,
+  // and a wake read two hours later would spend full price on the one thing
+  // the whole feature exists to get cheaply. The model is the only thing in
+  // the chain that knows what time it is when it reads this, so the deadline
+  // is stated to it rather than enforced anywhere else, and it leads, because
+  // everything below it is work not worth starting.
+  const deadline = expiresAt
+    ? `clauditor: this request was queued at ${new Date(now).toISOString()} and is worth ` +
+      `acting on only while the cache from that moment is still warm, which it is until ` +
+      `${new Date(expiresAt).toISOString()}. If the time now is later than that, the cache ` +
+      `has gone and writing this would cost full price rather than 0.1x, which is the one ` +
+      `outcome it exists to avoid. In that case do nothing at all: write no file, call no ` +
+      `tools, and reply with exactly\n\n${WAKE_EXPIRED}\n\nand nothing else. Otherwise ` +
+      `carry on with the rest of this message.\n\n`
+    : ''
+
   return (
+    deadline +
     `clauditor: this session peaked at ${k} context tokens. The prompt cache is still ` +
     `warm, which makes this the cheapest moment in the session to write a handoff: that ` +
     `context reads back at 0.1x now, against the 2x a cold session would pay to rewrite ` +

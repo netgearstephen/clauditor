@@ -1,6 +1,7 @@
 import { readConfig } from '../config.js'
 import { logActivity } from '../features/activity-log.js'
 import {
+  awaitingToolResult,
   bankInstruction,
   cwdFromTranscript,
   handoffStamp,
@@ -14,6 +15,8 @@ import {
   recordBankRequest,
   requestFloorFor,
   requestsSinceBank,
+  writeJournal,
+  CACHE_TTL_MS,
 } from '../features/journal.js'
 import {
   deleteTimerFile,
@@ -93,6 +96,7 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
       resolveTrigger(model).minRequestsSinceBank
     ),
     socketExists: socketStillOurs(file),
+    awaitingToolResult: awaitingToolResult(file.transcriptPath),
   }
 }
 
@@ -148,6 +152,13 @@ export async function runIdleTimerOnce(
         auth,
         bankInstruction(facts.peakContext, {
           stamp: handoffStamp(),
+          now,
+          // The cache dies an hour after the last real turn, not an hour
+          // after this send, and the poller fires five minutes short of
+          // that. So the window the woken turn actually has is whatever is
+          // left of the hour, and it is stated as an absolute time because
+          // the model reading it has no idea how long it sat in the queue.
+          expiresAt: now - (facts.msSinceLastTurn ?? 0) + CACHE_TTL_MS,
           // The session's OWN bank. Never state.promotedPath: that told a
           // session which had never banked to overwrite another session's
           // document, and destroyed a real handoff on 2026-09-10.
@@ -170,6 +181,16 @@ export async function runIdleTimerOnce(
   }
 
   if (verdict.act === 'notify') {
+    // A parked turn has done work since the last Stop wrote the mechanical
+    // journal, and rewriting it costs nothing: the facts script reads git and
+    // the transcript, never the model. The judgement half is what is being
+    // given up here, not the whole summary.
+    if (verdict.reason === 'parked-on-prompt') {
+      const cwd = cwdFromTranscript(file.transcriptPath) ?? file.cwd
+      try {
+        writeJournal(sessionId, cwd, readTurns(file.transcriptPath).turns.length)
+      } catch {}
+    }
     await logActivity({
       type: 'context_warning',
       session,

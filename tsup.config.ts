@@ -34,6 +34,7 @@ export default defineConfig([
       'hooks/session-start': 'src/hooks/session-start.ts',
       'hooks/idle-timer': 'src/hooks/idle-timer.ts',
       'hooks/session-end': 'src/hooks/session-end.ts',
+      'hooks/notification': 'src/hooks/notification.ts',
     },
     format: ['esm'],
     target: 'node20',
