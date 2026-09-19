@@ -907,6 +907,32 @@ describe('journal', () => {
       expect(readFileSync(theirs, 'utf-8')).toContain('**Session**: their-session')
     })
 
+    it('does not re-bank over a previous session\'s document in the same repo', async () => {
+      const j = await importFresh(tempDir)
+      // No facts script, so neither document carries a Session header and
+      // belongsElsewhere cannot tell them apart; only the state's bankedSession
+      // says whose document promotedPath names. This is the 2026-09-19 case:
+      // a bank overwrote the previous day's handoff and unlinked its own file.
+      j.recordBankRequest(CWD, Date.now(), 0, 'yesterday')
+      const theirs = modelWrites(
+        join(handoffs(tempDir), 'theirs-20260918-2255.md'),
+        `# Handoff: Theirs\n\n## Mission\nyesterday's work\n${'x'.repeat(200)}\n`
+      )
+      expect(j.adoptBankedHandoff(CWD, 40, { sessionId: 'yesterday' })).toBe(theirs)
+
+      j.recordBankRequest(CWD, Date.now() + 1000, 0, 'today')
+      const mine = modelWrites(
+        join(handoffs(tempDir), 'mine-20260919-1127.md'),
+        `# Handoff: Mine\n\n## Mission\ntoday's work\n${'y'.repeat(200)}\n`
+      )
+
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 'today', now: Date.now() + 2000 })).toBe(mine)
+      expect(existsSync(mine)).toBe(true)
+      expect(readFileSync(mine, 'utf-8')).toContain("today's work")
+      expect(readFileSync(theirs, 'utf-8')).toContain("yesterday's work")
+      expect(readFileSync(theirs, 'utf-8')).not.toContain("today's work")
+    })
+
     it('finds the file even when the reply names no path', async () => {
       const j = await importFresh(tempDir)
       j.recordBankRequest(CWD)
