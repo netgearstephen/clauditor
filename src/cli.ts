@@ -1615,6 +1615,12 @@ program
 const hookCmd = program
   .command('hook')
   .description('Internal hook handlers (called by Claude Code)')
+  // CLAUDITOR_DISABLED=1, and only 1, makes every hook a no-op. It exits here,
+  // before any handler module is imported, so nothing is read or written and
+  // Claude Code gets no decision.
+  .hook('preAction', () => {
+    if (process.env.CLAUDITOR_DISABLED === '1') process.exit(0)
+  })
 
 hookCmd
   .command('stop')

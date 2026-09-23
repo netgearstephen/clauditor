@@ -239,6 +239,10 @@ resolved gate keeps coming from `trigger.peakContext` regardless. Set
 
 The idle timer's 55-minute delay and 65k arming floor are constants, not config: they are derived from the cache TTL and the measured entry cost of a handoff, and there is nothing to tune until that research changes.
 
+### Turning the hooks off for a session
+
+Set `CLAUDITOR_DISABLED=1` in a session's environment and every clauditor hook becomes a no-op for that session: each one exits 0 straight away, reads no input, writes nothing and returns no decision. Only the exact value `1` counts, so `true`, `0` or an empty value leave clauditor running as normal. This is for tools that launch unattended sessions, such as `claude -p`, and want the rest of the user's hooks to run without clauditor. Claude Code merges hooks from every settings source, so `--settings` cannot remove them, but every hook a session runs inherits its environment.
+
 ## Cost tracking
 
 The fork corrects several pricing holes that made upstream's figures unreliable:
