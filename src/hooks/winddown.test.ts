@@ -30,11 +30,16 @@ describe('winding down after a bank, end to end', () => {
     rmSync(home, { recursive: true, force: true })
   })
 
-  function run(hook: string, input: Record<string, unknown>): Record<string, unknown> {
+  function run(
+    hook: string,
+    input: Record<string, unknown>,
+    { herdr = false }: { herdr?: boolean } = {}
+  ): Record<string, unknown> {
+    // Pinned either way: this suite is itself often run from inside a herdr pane.
     const out = execFileSync('node', [hook], {
       input: JSON.stringify(input),
       encoding: 'utf-8',
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, HERDR_ENV: herdr ? '1' : '' },
       timeout: 30_000,
     })
     return JSON.parse(out || '{}')
@@ -171,6 +176,66 @@ describe('winding down after a bank, end to end', () => {
     expect(out.reason).not.toContain('clauditor continue')
     expect(out.reason).toContain('next message')
   }, 30_000)
+
+  describe('handing itself over inside herdr', () => {
+    function handoffWrite(tool: string): Record<string, unknown> {
+      return {
+        ...toolCall(tool),
+        tool_input: { file_path: join(home, '.claude', 'handoffs', 'thing-20260923-2300.md') },
+      }
+    }
+
+    function bash(command: string): Record<string, unknown> {
+      return { ...toolCall('Bash'), tool_input: { command } }
+    }
+
+    it('lets every step of the succession through', () => {
+      // Stephen: "I shouldn't have to intervene here."
+      markBanked()
+      expect(run(PRE_TOOL_USE, handoffWrite('Write'), { herdr: true }).decision).toBeUndefined()
+      for (const command of [
+        'herdr pane split --current --direction right --no-focus',
+        'herdr agent start w5-next --kind claude --pane w5:pZ',
+        'herdr agent prompt w5:pZ "Continue a paused task."',
+        'herdr pane read --source recent --lines 80 --format text w5:pZ',
+      ]) {
+        expect(run(PRE_TOOL_USE, bash(command), { herdr: true }).decision).toBeUndefined()
+      }
+    }, 60_000)
+
+    it('still refuses feature edits and new subagents', () => {
+      markBanked()
+      for (const tool of ['Task', 'Edit', 'Write', 'NotebookEdit']) {
+        expect(run(PRE_TOOL_USE, toolCall(tool), { herdr: true }).decision).toBe('block')
+      }
+    }, 30_000)
+
+    it('names the hand-over as the exception when it refuses', () => {
+      markBanked()
+      const out = run(PRE_TOOL_USE, toolCall('Edit'), { herdr: true })
+      expect(out.reason).toContain('hand yourself over')
+      expect(out.reason).toContain('herdr agent start')
+      expect(out.reason).toContain('next message')
+      // Stopping is for a session that is not handing over, not an order to all.
+      expect(out.reason).toContain('If you are not handing over')
+      expect(out.reason).not.toContain('Tell them')
+    }, 30_000)
+
+    it('keeps the refusal free of herdr outside it, where the session writes and stops', () => {
+      markBanked()
+      const out = run(PRE_TOOL_USE, toolCall('Edit'))
+      expect(out.reason).not.toContain('herdr')
+      expect(out.reason).toContain('Tell them')
+      // The handoff itself may still be written, herdr or not.
+      expect(run(PRE_TOOL_USE, handoffWrite('Write')).decision).toBeUndefined()
+    }, 30_000)
+
+    it('lets a session that has not banked work as it does today', () => {
+      for (const tool of ['Task', 'Edit', 'Write']) {
+        expect(run(PRE_TOOL_USE, toolCall(tool), { herdr: true }).decision).toBeUndefined()
+      }
+    }, 30_000)
+  })
 
   it('stays out of the way when the guard is switched off', () => {
     markBanked()
