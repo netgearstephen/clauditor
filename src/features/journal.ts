@@ -419,9 +419,9 @@ const BANK_ANSWER_TOOLS = ['Edit', 'Write', 'NotebookEdit']
  * a session that changes directory is still the same session, and a different
  * session in the same repo has its own handoff to protect.
  *
- * Agents already running are untouched. This gate sees only new calls, so work
- * in flight finishes and gets recorded, which is what the bank instruction's
- * `## In-flight agents` section is for.
+ * Main thread only: a subagent's calls share the session_id, and the hook
+ * exempts them before asking, so work in flight finishes and gets recorded,
+ * which is what the bank instruction's `## In-flight agents` section is for.
  */
 export function isBlockedAfterBank(sessionId: string | null, toolName: string): boolean {
   if (!WORK_TOOLS_AFTER_BANK.includes(toolName)) return false
@@ -1038,8 +1038,9 @@ export function bankInstruction(
     (rewritePath
       ? `You banked earlier in this session and have grown a long way since, so that ` +
         `document no longer describes where you are. Replacing it.\n\n`
-      : `Banking one now, so it is ready if and when you rotate. Nothing is being blocked ` +
-        `and the session continues normally after this.\n\n`) +
+      : `Banking one now, so it is ready if and when you rotate. Nothing already running ` +
+        `is stopped, and subagents finish their work. Until the user's next message, this ` +
+        `session starts no new agents and makes no edits of its own.\n\n`) +
     where +
     `Then reply with EXACTLY this, on its own, with <path> replaced by the path you wrote ` +
     `and nothing else added:\n\n` +

@@ -71,11 +71,14 @@ export function clearOutcomePending(): void {
  * date, and a newly dispatched agent is the worst case: its work lands after
  * the document was written and nothing records it.
  *
- * Agents already running are untouched, since this sees only new calls, and
+ * Only the main thread is wound down. A subagent's calls arrive under the
+ * parent's session_id, and refusing them stranded work already in flight,
+ * which the bank records under `## In-flight agents` and expects to finish.
  * Bash is never refused so the existing handoff can still be brought up to
  * date. Returns null when nothing should be blocked.
  */
 function blockedAfterBank(input: PreToolUseHookInput): HookDecision | null {
+  if (input.agent_id) return null
   if (!readConfig().rotation.blockAfterBank) return null
   if (!isBlockedAfterBank(input.session_id, input.tool_name)) return null
   return {
