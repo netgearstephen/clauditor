@@ -86,7 +86,7 @@ A handoff you write by hand with the `/handoff` skill supersedes the automatic o
 
 ## The wind-down guard
 
-After a session banks, `PreToolUse` refuses `Edit`, `Write`, `NotebookEdit` and `Task`: any of those would make the banked document describe a session that no longer exists. Bash and reads stay open so the handoff itself can still be updated. Agents already running are unaffected.
+After a session banks, `PreToolUse` refuses `Edit`, `Write`, `NotebookEdit` and `Task`: any of those would make the banked document describe a session that no longer exists. Bash and reads stay open so the handoff itself can still be updated. The guard applies to the main thread only: subagents already running keep every tool and finish their work, told apart by the `agent_id` Claude Code sends only from inside a subagent.
 
 Your next message lifts the guard automatically. The hook does not read what you said, only that you said something, so nothing can be triggered by quoting or discussing a phrase. A re-bank request also lifts it for the tools that answer it. Turn it off with `rotation.blockAfterBank: false`.
 

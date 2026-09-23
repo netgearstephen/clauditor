@@ -419,9 +419,9 @@ const BANK_ANSWER_TOOLS = ['Edit', 'Write', 'NotebookEdit']
  * a session that changes directory is still the same session, and a different
  * session in the same repo has its own handoff to protect.
  *
- * Agents already running are untouched. This gate sees only new calls, so work
- * in flight finishes and gets recorded, which is what the bank instruction's
- * `## In-flight agents` section is for.
+ * Main thread only: a subagent's calls share the session_id, and the hook
+ * exempts them before asking, so work in flight finishes and gets recorded,
+ * which is what the bank instruction's `## In-flight agents` section is for.
  */
 export function isBlockedAfterBank(sessionId: string | null, toolName: string): boolean {
   if (!WORK_TOOLS_AFTER_BANK.includes(toolName)) return false

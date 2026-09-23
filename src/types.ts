@@ -235,6 +235,12 @@ export interface PreToolUseHookInput {
   tool_name: string
   tool_input: Record<string, unknown>
   cwd?: string
+  /**
+   * Set only when the call comes from inside a subagent, which otherwise
+   * arrives under the parent's session_id. Absent on the main thread even in
+   * --agent sessions, so agent_type cannot stand in for it.
+   */
+  agent_id?: string
 }
 
 export interface HookDecision {

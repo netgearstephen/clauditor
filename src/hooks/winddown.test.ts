@@ -89,6 +89,21 @@ describe('winding down after a bank, end to end', () => {
     }
   }, 30_000)
 
+  it('lets a subagent already at work finish it', () => {
+    // A subagent's tool calls reach this hook under the parent's session_id,
+    // so without this the bank refused work already in flight. Stephen: "That
+    // hook and tooling is meant to wind down the subagents, not block them."
+    // Claude Code sends agent_id only from inside a subagent, never from the
+    // main thread, even in --agent sessions.
+    markBanked()
+    for (const tool of ['Edit', 'Write', 'NotebookEdit', 'Task']) {
+      const out = run(PRE_TOOL_USE, { ...toolCall(tool), agent_id: 'a1b2c3', agent_type: 'general-purpose' })
+      expect(out.decision).toBeUndefined()
+    }
+    // agent_type alone is not a subagent: an --agent main thread carries it.
+    expect(run(PRE_TOOL_USE, { ...toolCall('Edit'), agent_type: 'reviewer' }).decision).toBe('block')
+  }, 30_000)
+
   it('lets a session answer the re-bank it was just asked for', () => {
     // The Stop hook stamps the marker when it asks for a re-bank. Refusing
     // Write here would make its own request unanswerable.
