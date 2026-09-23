@@ -1038,8 +1038,9 @@ export function bankInstruction(
     (rewritePath
       ? `You banked earlier in this session and have grown a long way since, so that ` +
         `document no longer describes where you are. Replacing it.\n\n`
-      : `Banking one now, so it is ready if and when you rotate. Nothing is being blocked ` +
-        `and the session continues normally after this.\n\n`) +
+      : `Banking one now, so it is ready if and when you rotate. Nothing already running ` +
+        `is stopped, and subagents finish their work. Until the user's next message, this ` +
+        `session starts no new agents and makes no edits of its own.\n\n`) +
     where +
     `Then reply with EXACTLY this, on its own, with <path> replaced by the path you wrote ` +
     `and nothing else added:\n\n` +
