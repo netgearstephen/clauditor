@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import type { PreToolUseHookInput, HookDecision } from '../types.js'
 import { readStdin, outputDecision, isHookEntry } from './shared.js'
 import { findKnownError } from '../features/error-index.js'
-import { isBlockedAfterBank } from '../features/journal.js'
+import { isBlockedAfterBank, inHerdr, SUCCESSION_STEPS } from '../features/journal.js'
 import { readConfig } from '../config.js'
 
 // Rate limit: only inject once per unique base command per session.
@@ -71,13 +71,18 @@ export function clearOutcomePending(): void {
  * date, and a newly dispatched agent is the worst case: its work lands after
  * the document was written and nothing records it.
  *
- * Agents already running are untouched, since this sees only new calls, and
- * Bash is never refused so the existing handoff can still be brought up to
- * date. Returns null when nothing should be blocked.
+ * Only the main thread is wound down. A subagent's calls arrive under the
+ * parent's session_id, and refusing them stranded work already in flight,
+ * which the bank records under `## In-flight agents` and expects to finish.
+ * Bash is never refused, and neither is a write to a handoff file, so the
+ * handoff can still be brought up to date. Inside herdr the reason also names
+ * the one thing the session may still do unattended, which is hand itself
+ * over. Returns null when nothing should be blocked.
  */
 function blockedAfterBank(input: PreToolUseHookInput): HookDecision | null {
+  if (input.agent_id) return null
   if (!readConfig().rotation.blockAfterBank) return null
-  if (!isBlockedAfterBank(input.session_id, input.tool_name)) return null
+  if (!isBlockedAfterBank(input.session_id, input.tool_name, input.tool_input)) return null
   return {
     decision: 'block',
     reason:
@@ -85,11 +90,17 @@ function blockedAfterBank(input: PreToolUseHookInput): HookDecision | null {
       `refused: work after the bank makes that document describe a session that no longer ` +
       `exists.\n\n` +
       `Let any agents still running finish, and do not start new ones. If something genuinely ` +
-      `has to be recorded, append it to the existing handoff with a Bash command, which is not ` +
-      `blocked.\n\n` +
-      `Only the user can lift this, and their next message does it automatically. Tell them ` +
-      `what you were about to do and stop. Do not lift it on your own initiative, and do not ` +
-      `ask anyone else to lift it for you.`,
+      `has to be recorded, write it into a handoff file, which is not blocked, or append it ` +
+      `with a Bash command.\n\n` +
+      (inHerdr()
+        ? `The one thing you may still do without the user is hand yourself over to a ` +
+          `successor in a new herdr pane, by these steps and no others: ${SUCCESSION_STEPS}\n\n` +
+          `Anything else waits for the user, and their next message lifts this ` +
+          `automatically. If you are not handing over, tell them what you were about to do ` +
+          `and stop.`
+        : `Only the user can lift this, and their next message does it automatically. Tell ` +
+          `them what you were about to do and stop.`) +
+      ` Do not lift it on your own initiative, and do not ask anyone else to lift it for you.`,
   }
 }
 

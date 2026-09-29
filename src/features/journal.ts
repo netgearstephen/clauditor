@@ -5,11 +5,12 @@ import {
   mkdirSync,
   existsSync,
   statSync,
+  lstatSync,
   readdirSync,
   unlinkSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { resolve, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import type { TurnMetrics, TokenUsage } from '../types.js'
 import { contextTokens } from './cost-tracker.js'
@@ -413,21 +414,91 @@ export const WORK_TOOLS_AFTER_BANK = ['Task', 'Edit', 'Write', 'NotebookEdit']
 const BANK_ANSWER_TOOLS = ['Edit', 'Write', 'NotebookEdit']
 
 /**
+ * The tools that may still write a handoff document after a bank.
+ *
+ * A handoff cannot make the bank stale, because it is the bank. Rewriting it
+ * at a new path is also the first step of a session handing itself over, and
+ * refusing Write there left Bash heredocs as the only way to produce the
+ * document a successor reads. NotebookEdit is absent: no handoff is a notebook.
+ */
+const HANDOFF_WRITE_TOOLS = ['Edit', 'Write']
+
+/**
+ * Is this call writing a handoff the banked session is entitled to write?
+ *
+ * Two cases only: a new markdown file directly in the handoffs directory, or
+ * the session's own banked document. Any other file there belongs to some
+ * other session, and overwriting one destroyed a real handoff on 2026-09-10.
+ * A symlink is never followed, so nothing in the directory can point a write
+ * out of it; a subdirectory is refused for the same reason.
+ */
+function isOwnHandoffWrite(toolName: string, path: unknown, bank: SessionBank): boolean {
+  if (!HANDOFF_WRITE_TOOLS.includes(toolName)) return false
+  if (typeof path !== 'string' || path === '') return false
+  const target = resolve(path)
+  if (dirname(target) !== HANDOFFS_DIR || !target.endsWith('.md')) return false
+  let existing
+  try {
+    existing = lstatSync(target)
+  } catch {
+    // Nothing there yet: Write creates it, and Edit has nothing to edit.
+    return toolName === 'Write'
+  }
+  return (
+    existing.isFile() && bank.handoffPath !== '' && resolve(bank.handoffPath) === target
+  )
+}
+
+/**
+ * Is this session running in a herdr pane?
+ *
+ * Only there can a session start its own successor without a person: herdr
+ * gives it a pane to split and an agent to prompt. Herdr sets HERDR_ENV=1 in
+ * every pane it manages, and hooks inherit it from the Claude Code process.
+ */
+export function inHerdr(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.HERDR_ENV === '1'
+}
+
+/**
+ * The self hand-over a banked session may still run, and nothing else.
+ *
+ * Stephen: "Clauditor stopping until I type is exactly what I DON'T want. I
+ * want you to be able to work autonomously." An orchestrator over budget has
+ * to run its own hand-over, and the wind-down otherwise held it until he
+ * typed. Permission, not an order: a worker is rotated by its orchestrator,
+ * so the text defers to the session's own instructions.
+ */
+export const SUCCESSION_STEPS =
+  `(1) write a fresh handoff with the Write tool at a new path in ${HANDOFFS_DIR}, ` +
+  `so it matches where the session is now; (2) \`herdr pane split\` for a new pane; ` +
+  `(3) \`herdr agent start <name> --kind claude --pane <new pane>\` in it; (4) ` +
+  `\`herdr agent prompt\` to submit the resume prompt, naming the new file; (5) ` +
+  `\`herdr pane read\` on that pane until the successor has summarised the handoff and ` +
+  `confirmed its next step; (6) stop. Do this only when your own instructions call for ` +
+  `a self hand-over; otherwise stop. Either way, no new feature work.`
+
+/**
  * Should this tool call be refused because the session has already banked?
  *
  * Keyed by session, never by directory, for the reason the whole ledger is:
  * a session that changes directory is still the same session, and a different
  * session in the same repo has its own handoff to protect.
  *
- * Agents already running are untouched. This gate sees only new calls, so work
- * in flight finishes and gets recorded, which is what the bank instruction's
- * `## In-flight agents` section is for.
+ * Main thread only: a subagent's calls share the session_id, and the hook
+ * exempts them before asking, so work in flight finishes and gets recorded,
+ * which is what the bank instruction's `## In-flight agents` section is for.
  */
-export function isBlockedAfterBank(sessionId: string | null, toolName: string): boolean {
+export function isBlockedAfterBank(
+  sessionId: string | null,
+  toolName: string,
+  toolInput: Record<string, unknown> = {}
+): boolean {
   if (!WORK_TOOLS_AFTER_BANK.includes(toolName)) return false
   const bank = readSessionBank(sessionId)
   if (!bank) return false
   if (bank.continueAfterBank === true) return false
+  if (isOwnHandoffWrite(toolName, toolInput.file_path, bank)) return false
   // A re-bank asked for and not yet answered. The request supersedes the guard
   // for the tools that answer it, and the bank that answers it re-arms the
   // guard by rewriting the marker without the stamp.
@@ -1001,7 +1072,8 @@ export function bankInstruction(
     rewritePath = '',
     expiresAt,
     now = Date.now(),
-  }: { stamp: string; rewritePath?: string; expiresAt?: number; now?: number }
+    herdr = inHerdr(),
+  }: { stamp: string; rewritePath?: string; expiresAt?: number; now?: number; herdr?: boolean }
 ): string {
   const k = peakContext.toLocaleString('en-GB')
 
@@ -1038,9 +1110,11 @@ export function bankInstruction(
     (rewritePath
       ? `You banked earlier in this session and have grown a long way since, so that ` +
         `document no longer describes where you are. Replacing it.\n\n`
-      : `Banking one now, so it is ready if and when you rotate. Nothing is being blocked ` +
-        `and the session continues normally after this.\n\n`) +
+      : `Banking one now, so it is ready if and when you rotate. Nothing already running ` +
+        `is stopped, and subagents finish their work. Until the user's next message, this ` +
+        `session starts no new agents and makes no edits of its own.\n\n`) +
     where +
+    (herdr ? handOverNow() : '') +
     `Then reply with EXACTLY this, on its own, with <path> replaced by the path you wrote ` +
     `and nothing else added:\n\n` +
     `${PASTE_PROMPT}\n\n` +
@@ -1074,6 +1148,30 @@ export function bankInstruction(
     `End your reply with the marker ${BANK_MARKER} on its own line, then stop. The marker ` +
     `goes in the reply either way: it is how clauditor knows the request was answered. Do ` +
     `not put it in the file.`
+  )
+}
+
+/**
+ * The self hand-over, as the bank turn itself can run it.
+ *
+ * Before the reply, because the reply ends the turn: a hand-over placed after
+ * it has no turn left to run in, and the session sits idle until the user
+ * types, which is the one outcome this exists to remove. The file the bank has
+ * just written is already the fresh handoff, so step (1) of SUCCESSION_STEPS
+ * is done by the time this runs. Given on a re-bank too, since a session well
+ * over budget is the likeliest to have banked once already.
+ */
+function handOverNow(): string {
+  return (
+    `If your own instructions call for a self hand-over now, as an orchestrator's do once ` +
+    `it is over budget, that is the one exception to the wind-down, and it runs in this ` +
+    `turn, before the reply below, because that reply ends the turn. Once the file is ` +
+    `written: (a) \`herdr pane split\` for a new pane; (b) \`herdr agent start <name> ` +
+    `--kind claude --pane <new pane>\` in it; (c) \`herdr agent prompt\` to submit the ` +
+    `paste prompt below, with <path> replaced by the file you wrote; (d) \`herdr pane ` +
+    `read\` on that pane until the successor has summarised the handoff and confirmed its ` +
+    `next step. Then make the reply. If your instructions do not call for it, skip this ` +
+    `paragraph. Either way, no new feature work.\n\n`
   )
 }
 

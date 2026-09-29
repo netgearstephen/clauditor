@@ -86,9 +86,11 @@ A handoff you write by hand with the `/handoff` skill supersedes the automatic o
 
 ## The wind-down guard
 
-After a session banks, `PreToolUse` refuses `Edit`, `Write`, `NotebookEdit` and `Task`: any of those would make the banked document describe a session that no longer exists. Bash and reads stay open so the handoff itself can still be updated. Agents already running are unaffected.
+After a session banks, `PreToolUse` refuses `Edit`, `Write`, `NotebookEdit` and `Task`: any of those would make the banked document describe a session that no longer exists. Bash, reads and `Edit` or `Write` to a markdown file under `~/.claude/handoffs` stay open so the handoff itself can still be updated. The guard applies to the main thread only: subagents already running keep every tool and finish their work, told apart by the `agent_id` Claude Code sends only from inside a subagent.
 
 Your next message lifts the guard automatically. The hook does not read what you said, only that you said something, so nothing can be triggered by quoting or discussing a phrase. A re-bank request also lifts it for the tools that answer it. Turn it off with `rotation.blockAfterBank: false`.
+
+Inside a herdr pane (`HERDR_ENV=1`) a banked session need not wait for you to hand over. The bank text and the refusal both name one exception: the session may write a fresh handoff at a new path, split a new pane, start a successor there with `herdr agent start`, submit the resume prompt with `herdr agent prompt`, read the successor's pane until it has confirmed its next step, and stop. It does so only when its own instructions call for a self hand-over, as an orchestrator's do. `Task` stays refused, so no new subagent can be dispatched, and edits outside the handoffs directory stay refused. Outside herdr nothing changes: the session writes the handoff and stops.
 
 ## Install
 
@@ -238,6 +240,10 @@ resolved gate keeps coming from `trigger.peakContext` regardless. Set
 `rotation.trigger.peakContext` for a gate that actually moves.
 
 The idle timer's 55-minute delay and 65k arming floor are constants, not config: they are derived from the cache TTL and the measured entry cost of a handoff, and there is nothing to tune until that research changes.
+
+### Turning the hooks off for a session
+
+Set `CLAUDITOR_DISABLED=1` in a session's environment and every clauditor hook becomes a no-op for that session: each one exits 0 straight away, reads no input, writes nothing and returns no decision. Only the exact value `1` counts, so `true`, `0` or an empty value leave clauditor running as normal. This is for tools that launch unattended sessions, such as `claude -p`, and want the rest of the user's hooks to run without clauditor. Claude Code merges hooks from every settings source, so `--settings` cannot remove them, but every hook a session runs inherits its environment.
 
 ## Cost tracking
 

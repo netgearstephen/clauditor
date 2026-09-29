@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync, readFileSync, symlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -1383,4 +1383,129 @@ describe('winding down after a bank', () => {
     expect(bank?.handoffPath).toBe('/tmp/h.md')
   })
 
+  it('lets a banked session rewrite its handoff at a new path', async () => {
+    // The first step of a self hand-over. Stephen: "Clauditor stopping until I
+    // type is exactly what I DON'T want. I want you to be able to work
+    // autonomously." A handoff file cannot make the bank stale: it is the bank.
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000 })
+    const fresh = join(tempDir, '.claude', 'handoffs', 'thing-20260923-2300.md')
+    expect(isBlockedAfterBank('s-1', 'Write', { file_path: fresh })).toBe(false)
+    // Edit has nothing to edit in a file that does not exist yet.
+    expect(isBlockedAfterBank('s-1', 'Edit', { file_path: fresh })).toBe(true)
+  })
+
+  it('lets a banked session edit its own banked handoff', async () => {
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    const handoffs = join(tempDir, '.claude', 'handoffs')
+    const own = join(handoffs, 'mine-20260923-2200.md')
+    mkdirSync(handoffs, { recursive: true })
+    writeFileSync(own, '# Handoff: mine\n')
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000, handoffPath: own })
+    for (const tool of ['Write', 'Edit']) {
+      expect(isBlockedAfterBank('s-1', tool, { file_path: own })).toBe(false)
+    }
+  })
+
+  it('refuses to overwrite another session\'s handoff', async () => {
+    // The exemption is for this session's own document. Overwriting a peer's
+    // destroyed a real handoff on 2026-09-10.
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    const handoffs = join(tempDir, '.claude', 'handoffs')
+    mkdirSync(handoffs, { recursive: true })
+    const own = join(handoffs, 'mine-20260923-2200.md')
+    const peer = join(handoffs, 'peer-20260923-2100.md')
+    writeFileSync(own, '# Handoff: mine\n')
+    writeFileSync(peer, '# Handoff: peer\n')
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000, handoffPath: own })
+    for (const tool of ['Write', 'Edit']) {
+      expect(isBlockedAfterBank('s-1', tool, { file_path: peer })).toBe(true)
+    }
+  })
+
+  it('never follows a symlink out of the handoffs directory', async () => {
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    const handoffs = join(tempDir, '.claude', 'handoffs')
+    mkdirSync(handoffs, { recursive: true })
+    const outside = join(tempDir, 'elsewhere.md')
+    writeFileSync(outside, 'x')
+    const link = join(handoffs, 'link-20260923-2300.md')
+    symlinkSync(outside, link)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000, handoffPath: link })
+    expect(isBlockedAfterBank('s-1', 'Write', { file_path: link })).toBe(true)
+    // Nor into a subdirectory, which could itself be a link.
+    expect(
+      isBlockedAfterBank('s-1', 'Write', { file_path: join(handoffs, 'sub', 'x.md') })
+    ).toBe(true)
+  })
+
+  it('still refuses feature edits and new agents after a bank', async () => {
+    const { markSessionBanked, isBlockedAfterBank } = await importFresh(tempDir)
+    markSessionBanked('s-1', CWD, Date.now(), { peakContext: 210_000 })
+    const handoffs = join(tempDir, '.claude', 'handoffs')
+    for (const path of [
+      '/home/user/project-a/src/index.ts',
+      // Out of the directory by traversal, and a lookalike sibling of it.
+      join(handoffs, '..', 'settings.json'),
+      `${handoffs}-evil/thing.md`,
+      // Inside it, but not a handoff document.
+      join(handoffs, 'run.sh'),
+    ]) {
+      expect(isBlockedAfterBank('s-1', 'Write', { file_path: path })).toBe(true)
+    }
+    expect(isBlockedAfterBank('s-1', 'Write')).toBe(true)
+    expect(isBlockedAfterBank('s-1', 'NotebookEdit', { notebook_path: join(handoffs, 'x.md') })).toBe(true)
+    // A successor starts in a herdr pane over Bash, never as a subagent.
+    expect(isBlockedAfterBank('s-1', 'Task', { file_path: join(handoffs, 'x.md') })).toBe(true)
+  })
+
+  describe('the bank text', () => {
+    it('names self hand-over as the one exception inside herdr', async () => {
+      const { bankInstruction } = await importFresh(tempDir)
+      const text = bankInstruction(250_000, { stamp: '20260923-2300', herdr: true })
+      expect(text).toContain('self hand-over')
+      for (const step of ['herdr pane split', 'herdr agent start', 'herdr agent prompt', 'herdr pane read']) {
+        expect(text).toContain(step)
+      }
+      expect(text).toContain('no new feature work')
+      // Permission, not an order: a worker is rotated by its orchestrator.
+      expect(text).toContain('If your own instructions call for')
+    })
+
+    it('puts the hand-over before the reply that ends the turn', async () => {
+      // After the reply there is no turn left to run it in, and the session
+      // would sit idle until the user typed.
+      const { bankInstruction } = await importFresh(tempDir)
+      const text = bankInstruction(250_000, { stamp: '20260923-2300', herdr: true })
+      expect(text).toContain('before the reply below')
+      expect(text.indexOf('herdr agent start')).toBeLessThan(text.indexOf('Then reply with EXACTLY'))
+    })
+
+    it('offers the hand-over on a re-bank too', async () => {
+      // A session well over budget is the likeliest to have banked once already.
+      const { bankInstruction } = await importFresh(tempDir)
+      const text = bankInstruction(360_000, {
+        stamp: '20260923-2300',
+        rewritePath: '/home/user/.claude/handoffs/thing-20260923-2200.md',
+        herdr: true,
+      })
+      expect(text).toContain('herdr agent start')
+    })
+
+    it('says what it says today outside herdr', async () => {
+      const { bankInstruction } = await importFresh(tempDir)
+      const text = bankInstruction(250_000, { stamp: '20260923-2300', herdr: false })
+      expect(text).toContain('Until the user\'s next message, this session starts no new agents')
+      expect(text).not.toContain('herdr')
+    })
+  })
+
+  describe('inHerdr', () => {
+    it('reads the variable herdr sets in every pane it manages', async () => {
+      const { inHerdr } = await importFresh(tempDir)
+      expect(inHerdr({ HERDR_ENV: '1' })).toBe(true)
+      expect(inHerdr({})).toBe(false)
+      expect(inHerdr({ HERDR_ENV: '' })).toBe(false)
+    })
+  })
 })
