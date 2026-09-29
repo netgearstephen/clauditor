@@ -68,4 +68,10 @@ describe('readConfig', () => {
     first.rotation.trigger.perModel['claude-opus-5'] = { peakContext: 1 }
     expect(readConfig().rotation.trigger.perModel).toEqual({})
   })
+
+  it('compresses bash output by default and lets the config turn it off', () => {
+    expect(readConfig().compression.bash).toBe(true)
+    write({ compression: { bash: false } })
+    expect(readConfig().compression.bash).toBe(false)
+  })
 })

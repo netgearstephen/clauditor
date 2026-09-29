@@ -85,7 +85,7 @@ async function processToolResult(input: PostToolUseHookInput): Promise<HookDecis
 
 
   // 1. Compress bash output if applicable
-  if (input.tool_name === 'Bash') {
+  if (input.tool_name === 'Bash' && readConfig().compression.bash) {
     const toolResponse = responseText(input.tool_response)
     if (toolResponse.length >= 500) {
       const result = compressBashOutput(toolResponse)

@@ -162,6 +162,9 @@ One config file at `~/.clauditor/config.json`, created on `clauditor install`. I
   },
   "notifications": {
     "desktop": true
+  },
+  "compression": {
+    "bash": true
   }
 }
 ```
@@ -176,6 +179,7 @@ One config file at `~/.clauditor/config.json`, created on `clauditor install`. I
 | `rotation.minPeakContext` | `150000` | Deprecated alias for `rotation.trigger.peakContext`. See below |
 | `rotation.reBankGrowth` | `50000` | Peak-context growth since the last bank that earns a rewrite. Refreshes 65% of banking sessions, against 34% at 100k |
 | `rotation.blockAfterBank` | `true` | Enforce the wind-down guard after a bank |
+| `compression.bash` | `true` | Compress verbose Bash output in `PostToolUse`. Set `false` when another tool, such as RTK, already condenses it |
 | `pricing.discount` | `0` | Fraction off list price. See below |
 | `pricing.perModel` | `{}` | Per-model discount overrides keyed by model prefix. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
 | `notifications.desktop` | `true` | Desktop notifications for cache issues and idle-timer outcomes |
