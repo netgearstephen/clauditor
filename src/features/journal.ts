@@ -1286,9 +1286,13 @@ export function adoptBankedHandoff(
     // The recorded path is reused so a re-bank replaces the document the first
     // bank produced. It is only reused while it still describes this session:
     // a path left over from a bank that landed elsewhere would otherwise be
-    // overwritten on every re-bank.
+    // overwritten on every re-bank. The document itself rarely says whose it
+    // is (the facts script adds the Session line, and often yields nothing),
+    // so the state's record of who banked it decides.
     const reusable =
-      state.promotedPath !== '' && !belongsElsewhere(readIfPresent(state.promotedPath), sessionId, cwd)
+      state.promotedPath !== '' &&
+      state.bankedSession === (sessionId ?? '') &&
+      !belongsElsewhere(readIfPresent(state.promotedPath), sessionId, cwd)
     const target = reusable
       ? state.promotedPath
       : candidate.startsWith(HANDOFFS_DIR)
@@ -1431,6 +1435,9 @@ function storeJudgement(
     // A new session's bank supersedes the last one, so the previous
     // promotion must not keep promoteIfUsed from offering this one.
     promotedAt: 0,
+    // promotedPath is always bankedSession's document. Kept across a change of
+    // session, a later re-bank would overwrite the previous session's handoff.
+    promotedPath: current.bankedSession === (sessionId ?? '') ? current.promotedPath : '',
   }))
 
   // Only a paid bank is recorded: see BANKED_DIR.
