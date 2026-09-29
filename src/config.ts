@@ -120,6 +120,10 @@ export interface ClauditorUserConfig {
   notifications: {
     desktop: boolean
   }
+  /** Tool-output compression. Turn bash off when another tool (RTK) already condenses it. */
+  compression: {
+    bash: boolean
+  }
   pricing: PricingUserConfig
   /** Per-project hub config, keyed by normalized git remote URL */
   projects?: Record<string, ProjectHubConfig>
@@ -145,6 +149,9 @@ const DEFAULTS: ClauditorUserConfig = {
   notifications: {
     desktop: true,
   },
+  compression: {
+    bash: true,
+  },
 }
 
 /**
@@ -164,6 +171,7 @@ type RawConfig = {
   rotation?: Partial<ClauditorUserConfig['rotation']>
   pricing?: Partial<PricingUserConfig>
   notifications?: Partial<ClauditorUserConfig['notifications']>
+  compression?: Partial<ClauditorUserConfig['compression']>
   projects?: ClauditorUserConfig['projects']
 }
 
@@ -209,6 +217,7 @@ function mergeConfig(raw: RawConfig): ClauditorUserConfig {
       perModel: { ...DEFAULTS.pricing.perModel, ...(rawPricing.perModel ?? {}) },
     },
     notifications: { ...DEFAULTS.notifications, ...raw.notifications },
+    compression: { ...DEFAULTS.compression, ...raw.compression },
     projects: raw.projects ? { ...raw.projects } : undefined,
   }
 }

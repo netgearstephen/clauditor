@@ -1283,12 +1283,12 @@ export function adoptBankedHandoff(
     // user has already pasted keeps naming the current document. A model that
     // wrote to clauditor's own path instead gets the document moved where the
     // user can find it, named from its title.
-    // The recorded path is reused only when THIS session's earlier bank
-    // produced it. The state is per directory, so after another session banks
-    // in the same repo the path names that session's document; a document
-    // rarely carries a Session header (the facts script is what adds one), so
-    // its text cannot tell the two apart. Observed on 2026-09-19: a fresh
-    // bank overwrote the previous day's handoff and unlinked its own file.
+    // The recorded path is reused so a re-bank replaces the document the first
+    // bank produced. It is only reused while it still describes this session:
+    // a path left over from a bank that landed elsewhere would otherwise be
+    // overwritten on every re-bank. The document itself rarely says whose it
+    // is (the facts script adds the Session line, and often yields nothing),
+    // so the state's record of who banked it decides.
     const reusable =
       state.promotedPath !== '' &&
       state.bankedSession === (sessionId ?? '') &&
@@ -1435,6 +1435,9 @@ function storeJudgement(
     // A new session's bank supersedes the last one, so the previous
     // promotion must not keep promoteIfUsed from offering this one.
     promotedAt: 0,
+    // promotedPath is always bankedSession's document. Kept across a change of
+    // session, a later re-bank would overwrite the previous session's handoff.
+    promotedPath: current.bankedSession === (sessionId ?? '') ? current.promotedPath : '',
   }))
 
   // Only a paid bank is recorded: see BANKED_DIR.

@@ -907,30 +907,45 @@ describe('journal', () => {
       expect(readFileSync(theirs, 'utf-8')).toContain('**Session**: their-session')
     })
 
-    it('does not re-bank over a previous session\'s document in the same repo', async () => {
+    it("does not re-bank over the previous session's document in the same repo", async () => {
       const j = await importFresh(tempDir)
-      // No facts script, so neither document carries a Session header and
-      // belongsElsewhere cannot tell them apart; only the state's bankedSession
-      // says whose document promotedPath names. This is the 2026-09-19 case:
-      // a bank overwrote the previous day's handoff and unlinked its own file.
-      j.recordBankRequest(CWD, Date.now(), 0, 'yesterday')
+      // No facts script, as in production: neither document gets a Session
+      // line, so only the state can say which session banked the first one.
+      j.recordBankRequest(CWD, Date.now(), 0, 'previous-session')
       const theirs = modelWrites(
-        join(handoffs(tempDir), 'theirs-20260918-2255.md'),
-        `# Handoff: Theirs\n\n## Mission\nyesterday's work\n${'x'.repeat(200)}\n`
+        join(handoffs(tempDir), 'theirs-20260928-1648.md'),
+        `# Handoff: Theirs\n\n## Mission\nprevious work\n${'x'.repeat(200)}\n`
       )
-      expect(j.adoptBankedHandoff(CWD, 40, { sessionId: 'yesterday' })).toBe(theirs)
+      expect(j.adoptBankedHandoff(CWD, 40, { sessionId: 'previous-session' })).toBe(theirs)
 
-      j.recordBankRequest(CWD, Date.now() + 1000, 0, 'today')
-      const mine = modelWrites(
-        join(handoffs(tempDir), 'mine-20260919-1127.md'),
-        `# Handoff: Mine\n\n## Mission\ntoday's work\n${'y'.repeat(200)}\n`
+      j.recordBankRequest(CWD, Date.now(), 0, 'this-session')
+      const mine = modelWrites(join(handoffs(tempDir), 'mine-20260929-1113.md'))
+      const adopted = j.adoptBankedHandoff(CWD, 80, {
+        sessionId: 'this-session',
+        reply: `Read ${mine} in full`,
+      })
+
+      expect(adopted).toBe(mine)
+      expect(readFileSync(mine, 'utf-8')).toContain(judgement.trim().split('\n')[0])
+      expect(readFileSync(theirs, 'utf-8')).toContain('previous work')
+    })
+
+    it("a bank captured from the reply does not inherit the previous session's document", async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD, Date.now(), 0, 'previous-session')
+      const theirs = modelWrites(
+        join(handoffs(tempDir), 'theirs-20260928-1648.md'),
+        `# Handoff: Theirs\n\n## Mission\nprevious work\n${'x'.repeat(200)}\n`
       )
+      j.adoptBankedHandoff(CWD, 40, { sessionId: 'previous-session' })
 
-      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 'today', now: Date.now() + 2000 })).toBe(mine)
-      expect(existsSync(mine)).toBe(true)
-      expect(readFileSync(mine, 'utf-8')).toContain("today's work")
-      expect(readFileSync(theirs, 'utf-8')).toContain("yesterday's work")
-      expect(readFileSync(theirs, 'utf-8')).not.toContain("today's work")
+      // This session's first bank arrives as reply text, its second as a file.
+      j.capturePendingHandoff(CWD, 60, judgement, { sessionId: 'this-session' })
+      j.recordBankRequest(CWD, Date.now(), 0, 'this-session')
+      const mine = modelWrites(join(handoffs(tempDir), 'mine-20260929-1113.md'))
+
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 'this-session' })).toBe(mine)
+      expect(readFileSync(theirs, 'utf-8')).toContain('previous work')
     })
 
     it('finds the file even when the reply names no path', async () => {
