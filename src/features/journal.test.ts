@@ -907,6 +907,47 @@ describe('journal', () => {
       expect(readFileSync(theirs, 'utf-8')).toContain('**Session**: their-session')
     })
 
+    it("does not re-bank over the previous session's document in the same repo", async () => {
+      const j = await importFresh(tempDir)
+      // No facts script, as in production: neither document gets a Session
+      // line, so only the state can say which session banked the first one.
+      j.recordBankRequest(CWD, Date.now(), 0, 'previous-session')
+      const theirs = modelWrites(
+        join(handoffs(tempDir), 'theirs-20260928-1648.md'),
+        `# Handoff: Theirs\n\n## Mission\nprevious work\n${'x'.repeat(200)}\n`
+      )
+      expect(j.adoptBankedHandoff(CWD, 40, { sessionId: 'previous-session' })).toBe(theirs)
+
+      j.recordBankRequest(CWD, Date.now(), 0, 'this-session')
+      const mine = modelWrites(join(handoffs(tempDir), 'mine-20260929-1113.md'))
+      const adopted = j.adoptBankedHandoff(CWD, 80, {
+        sessionId: 'this-session',
+        reply: `Read ${mine} in full`,
+      })
+
+      expect(adopted).toBe(mine)
+      expect(readFileSync(mine, 'utf-8')).toContain(judgement.trim().split('\n')[0])
+      expect(readFileSync(theirs, 'utf-8')).toContain('previous work')
+    })
+
+    it("a bank captured from the reply does not inherit the previous session's document", async () => {
+      const j = await importFresh(tempDir)
+      j.recordBankRequest(CWD, Date.now(), 0, 'previous-session')
+      const theirs = modelWrites(
+        join(handoffs(tempDir), 'theirs-20260928-1648.md'),
+        `# Handoff: Theirs\n\n## Mission\nprevious work\n${'x'.repeat(200)}\n`
+      )
+      j.adoptBankedHandoff(CWD, 40, { sessionId: 'previous-session' })
+
+      // This session's first bank arrives as reply text, its second as a file.
+      j.capturePendingHandoff(CWD, 60, judgement, { sessionId: 'this-session' })
+      j.recordBankRequest(CWD, Date.now(), 0, 'this-session')
+      const mine = modelWrites(join(handoffs(tempDir), 'mine-20260929-1113.md'))
+
+      expect(j.adoptBankedHandoff(CWD, 80, { sessionId: 'this-session' })).toBe(mine)
+      expect(readFileSync(theirs, 'utf-8')).toContain('previous work')
+    })
+
     it('finds the file even when the reply names no path', async () => {
       const j = await importFresh(tempDir)
       j.recordBankRequest(CWD)
