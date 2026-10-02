@@ -324,6 +324,34 @@ describe('pricingKeyForModel', () => {
     expect(pricingKeyForModel('qwen36-35b:latest')).toBeNull()
     expect(pricingKeyForModel('claude-unreleased-9')).toBeNull()
   })
+
+  it('resolves the three OpenRouter model keys', () => {
+    expect(pricingKeyForModel('moonshotai/kimi-k3')).toBe('moonshotai/kimi-k3')
+    expect(pricingKeyForModel('deepseek/deepseek-v4-pro-0813')).toBe('deepseek/deepseek-v4-pro-0813')
+    expect(pricingKeyForModel('z-ai/glm-5.3')).toBe('z-ai/glm-5.3')
+  })
+})
+
+describe('OpenRouter models', () => {
+  it('price an OpenRouter model at its real rate, not the zero sentinel', () => {
+    // OpenRouter ids are not claude- prefixed, so before these entries existed
+    // they fell through to ZERO_PRICING and reported no spend at all.
+    expect(getPricingForModel('moonshotai/kimi-k3').inputPerMillion).toBe(2.7)
+    expect(getPricingForModel('deepseek/deepseek-v4-pro-0813').cacheReadPerMillion).toBe(0.022)
+    expect(getPricingForModel('z-ai/glm-5.3').outputPerMillion).toBe(4.4)
+  })
+
+  it('carries the 262k window for the OpenRouter models', () => {
+    expect(getPricingForModel('moonshotai/kimi-k3').windowTokens).toBe(262_144)
+    expect(getPricingForModel('deepseek/deepseek-v4-pro-0813').windowTokens).toBe(262_144)
+    expect(getPricingForModel('z-ai/glm-5.3').windowTokens).toBe(262_144)
+  })
+
+  it('charges no separate cache-write premium', () => {
+    const kimi = getPricingForModel('moonshotai/kimi-k3')
+    expect(kimi.cacheCreationPerMillion).toBe(kimi.inputPerMillion)
+    expect(kimi.cacheCreation1hPerMillion).toBe(kimi.inputPerMillion)
+  })
 })
 
 describe('an empty config', () => {

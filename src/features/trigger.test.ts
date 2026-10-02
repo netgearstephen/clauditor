@@ -85,6 +85,26 @@ describe('resolveTrigger', () => {
     expect(t.gate).toBe(150_000)
   })
 
+  it('applies a per-model override for an OpenRouter model id', () => {
+    const t = resolveTrigger(
+      'z-ai/glm-5.3',
+      config({ perModel: { 'z-ai/glm-5.3': { peakContext: 200_000 } } })
+    )
+    expect(t.gate).toBe(200_000)
+    expect(t.clampedTo).toBeNull()
+  })
+
+  it('clamps an OpenRouter gate that sits above its 262k window', () => {
+    // 300k is above 0.9 * 262_144, so the gate is pulled down to the ceiling;
+    // the 200k target this feature configures sits below it and is not clamped.
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    const t = resolveTrigger('deepseek/deepseek-v4-pro-0813', config({ peakContext: 300_000 }))
+    expect(t.gate).toBe(262_144 * WINDOW_FRACTION)
+    expect(t.clampedTo).toBe(262_144 * WINDOW_FRACTION)
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+
   it('floors a gate that a buffer larger than the peak would push negative', () => {
     // A negative gate is beaten by every session's first turn: the failure
     // mode the clamp exists to prevent, arrived at from the other direction.
