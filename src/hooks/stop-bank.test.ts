@@ -426,7 +426,7 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
   })
 
   it('defers the bank while rotating would not repay within the cost horizon', () => {
-    // Opus 5 at 260k breaks even after about 6 requests, so a horizon of 2
+    // Opus 5 at 260k breaks even after about 7 requests, so a horizon of 2
     // defers; the default of 0 (see the case above) leaves the gate alone.
     mkdirSync(join(home, '.clauditor'), { recursive: true })
     writeFileSync(

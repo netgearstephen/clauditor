@@ -175,6 +175,7 @@ One config file at `~/.clauditor/config.json`, created on `clauditor install`. I
 | `rotation.trigger.peakContext` | `150000` | The banking gate. See below |
 | `rotation.trigger.buffer` | `0` | Tokens to fire early by, without moving the gate itself |
 | `rotation.trigger.minRequestsSinceBank` | `20` | Billed requests since the last bank before another one is allowed. Re-banks only; a session's first bank is never held back |
+| `rotation.trigger.costHorizonRequests` | `0` | Cost-effectiveness gate on the bank. When above 0, a bank at the gate is deferred (and re-checked at the next Stop) unless rotating repays its cost, the bank turn plus the cold entry write, within this many requests. Opus 5 breaks even after about 13 requests at 150k, Fable 5.1 about 48. 0 disables it |
 | `rotation.trigger.perModel` | `{}` | Per-field overrides keyed by model prefix, e.g. `{ "claude-haiku-4-5": { "peakContext": 120000 } }`. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
 | `rotation.minPeakContext` | `150000` | Deprecated alias for `rotation.trigger.peakContext`. See below |
 | `rotation.reBankGrowth` | `50000` | Peak-context growth since the last bank that earns a rewrite. Refreshes 65% of banking sessions, against 34% at 100k |
