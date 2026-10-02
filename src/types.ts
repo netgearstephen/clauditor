@@ -334,6 +334,40 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheReadPerMillion: 0.1,
     windowTokens: 200_000,
   },
+  // OpenRouter-billed models, keyed by the id Claude Code records in the
+  // session transcript (the vendor-prefixed OpenRouter id, not the `--model`
+  // alias). Not on the Anthropic invoice, so these rates are OpenRouter's per
+  // million tokens. Provider caching is automatic — there is no separate
+  // cache-*write* charge — so cacheCreationPerMillion and
+  // cacheCreation1hPerMillion equal the input rate, and only the cache-read
+  // discount is real.
+  'moonshotai/kimi-k3': {
+    model: 'moonshotai/kimi-k3',
+    inputPerMillion: 2.7,
+    outputPerMillion: 13.5,
+    cacheCreationPerMillion: 2.7,
+    cacheCreation1hPerMillion: 2.7,
+    cacheReadPerMillion: 0.27,
+    windowTokens: 262_144,
+  },
+  'deepseek/deepseek-v4-pro': {
+    model: 'deepseek/deepseek-v4-pro',
+    inputPerMillion: 0.66,
+    outputPerMillion: 1.98,
+    cacheCreationPerMillion: 0.66,
+    cacheCreation1hPerMillion: 0.66,
+    cacheReadPerMillion: 0.022,
+    windowTokens: 262_144,
+  },
+  'z-ai/glm-5.3': {
+    model: 'z-ai/glm-5.3',
+    inputPerMillion: 1.4,
+    outputPerMillion: 4.4,
+    cacheCreationPerMillion: 1.4,
+    cacheCreation1hPerMillion: 1.4,
+    cacheReadPerMillion: 0.14,
+    windowTokens: 262_144,
+  },
 }
 
 /**
