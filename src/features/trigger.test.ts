@@ -10,7 +10,7 @@ function config(trigger: Partial<ClauditorUserConfig['rotation']['trigger']>): C
       minPeakContext: 150_000,
       reBankGrowth: 50_000,
       blockAfterBank: true,
-      trigger: { peakContext: 150_000, buffer: 0, minRequestsSinceBank: 20, perModel: {}, ...trigger },
+      trigger: { peakContext: 150_000, buffer: 0, minRequestsSinceBank: 20, costHorizonRequests: 0, perModel: {}, ...trigger },
     },
     pricing: { discount: 0, perModel: {} },
     notifications: { desktop: true },
@@ -160,6 +160,30 @@ describe('resolveTrigger', () => {
     expect(t.gate).toBe(0)
     expect(t.clampedTo).toBeNull()
     expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+
+  it('leaves the cost gate off by default', () => {
+    expect(resolveTrigger('claude-opus-5', config({})).costHorizonRequests).toBe(0)
+  })
+
+  it('resolves the cost horizon per model, field by field', () => {
+    const t = resolveTrigger(
+      'claude-opus-5',
+      config({
+        costHorizonRequests: 10,
+        perModel: { 'claude-opus-5': { costHorizonRequests: 30 } },
+      })
+    )
+    expect(t.costHorizonRequests).toBe(30)
+    expect(t.gate).toBe(150_000)
+  })
+
+  it('warns once and disables the cost gate when the horizon is not a number', () => {
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    const t = resolveTrigger('claude-opus-5', config({ costHorizonRequests: 'abc' as unknown as number }))
+    expect(t.costHorizonRequests).toBe(0)
+    expect(warn).toHaveBeenCalledTimes(1)
     warn.mockRestore()
   })
 })

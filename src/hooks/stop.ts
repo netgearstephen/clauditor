@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto'
 import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
 import { resolveTrigger } from '../features/trigger.js'
+import { isRotationCostEffective } from '../features/rotation-economics.js'
 import {
   BANK_MARKER,
   adoptBankedHandoff,
@@ -276,6 +277,21 @@ function maintainSummary(input: StopHookInput): HookDecision | null {
       }
     )
   ) {
+    return null
+  }
+
+  // Deferred, not cancelled: nothing is recorded, so the next Stop asks again
+  // at a larger context, where the break-even is shorter.
+  const cost = isRotationCostEffective(peakContext, model, trigger.costHorizonRequests)
+  if (!cost.effective) {
+    logActivity({
+      type: 'context_warning',
+      session: input.session_id.slice(0, 8),
+      message:
+        `bank deferred at ${peakContext} peak context: rotating breaks even after ` +
+        `${Math.round(cost.breakEvenRequests ?? 0)} requests, over the ` +
+        `${trigger.costHorizonRequests} allowed`,
+    }).catch(() => {})
     return null
   }
 
