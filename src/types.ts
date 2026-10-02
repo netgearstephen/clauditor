@@ -350,8 +350,8 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheReadPerMillion: 0.27,
     windowTokens: 262_144,
   },
-  'deepseek/deepseek-v4-pro-0813': {
-    model: 'deepseek/deepseek-v4-pro-0813',
+  'deepseek/deepseek-v4-pro': {
+    model: 'deepseek/deepseek-v4-pro',
     inputPerMillion: 0.66,
     outputPerMillion: 1.98,
     cacheCreationPerMillion: 0.66,

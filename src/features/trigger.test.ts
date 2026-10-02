@@ -98,7 +98,7 @@ describe('resolveTrigger', () => {
     // 300k is above 0.9 * 262_144, so the gate is pulled down to the ceiling;
     // the 200k target this feature configures sits below it and is not clamped.
     const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
-    const t = resolveTrigger('deepseek/deepseek-v4-pro-0813', config({ peakContext: 300_000 }))
+    const t = resolveTrigger('deepseek/deepseek-v4-pro', config({ peakContext: 300_000 }))
     expect(t.gate).toBe(262_144 * WINDOW_FRACTION)
     expect(t.clampedTo).toBe(262_144 * WINDOW_FRACTION)
     expect(warn).toHaveBeenCalledOnce()
