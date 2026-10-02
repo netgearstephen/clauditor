@@ -20,6 +20,7 @@ export interface ModelTriggerOverride {
   peakContext?: number
   buffer?: number
   minRequestsSinceBank?: number
+  costHorizonRequests?: number
 }
 
 export interface TriggerConfig {
@@ -56,6 +57,18 @@ export interface TriggerConfig {
    * most.
    */
   minRequestsSinceBank: number
+  /**
+   * Cost-effectiveness gate on the bank, as a number of requests. 0 disables
+   * it, which is the default.
+   *
+   * The bank is only taken when rotating would pay for itself within this many
+   * further requests: the bank turn plus the cold entry write, divided by the
+   * per-request saving of the smaller context. See rotation-economics.ts.
+   * Re-evaluated at every Stop, so a deferred bank fires once the context has
+   * grown enough to clear it. Not a prediction of requests remaining, for the
+   * reason minRequestsSinceBank is not one.
+   */
+  costHorizonRequests: number
   /** Overrides keyed by the same longest-prefix model key as MODEL_PRICING. */
   perModel: Record<string, ModelTriggerOverride>
 }
@@ -137,6 +150,7 @@ const DEFAULTS: ClauditorUserConfig = {
       peakContext: 150_000,
       buffer: 0,
       minRequestsSinceBank: 20,
+      costHorizonRequests: 0,
       perModel: {},
     },
     reBankGrowth: 50_000,

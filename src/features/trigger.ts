@@ -16,6 +16,8 @@ export interface ResolvedTrigger {
   peakContext: number
   buffer: number
   minRequestsSinceBank: number
+  /** Requests within which a rotation must pay for itself; 0 means no cost gate. */
+  costHorizonRequests: number
   /** What the peak is actually compared against. The only number to use. */
   gate: number
   /** The ceiling, when the window forced one, else null. */
@@ -82,6 +84,7 @@ export function resolveTrigger(
   const peakContext = override?.peakContext ?? trigger.peakContext
   const buffer = override?.buffer ?? trigger.buffer
   const rawFloor = override?.minRequestsSinceBank ?? trigger.minRequestsSinceBank
+  const rawHorizon = override?.costHorizonRequests ?? trigger.costHorizonRequests
 
   // The label a warning names the model by. key is the resolved pricing key
   // when there is one; modelId carries an unmatched model through instead of
@@ -101,6 +104,20 @@ export function resolveTrigger(
       `floor:${modelLabel}`,
       `clauditor: the trigger's minRequestsSinceBank for ${modelLabel} is not a number of zero or ` +
         `more; using a floor of 0 instead, which allows banking as soon as the gate is met.`
+    )
+  }
+
+  // Falls open to 0 (no cost gate) for the same reason the floor does: a
+  // broken knob must not be able to stop banking altogether.
+  let costHorizonRequests: number
+  if (Number.isFinite(rawHorizon) && rawHorizon >= 0) {
+    costHorizonRequests = Number(rawHorizon)
+  } else {
+    costHorizonRequests = 0
+    warnOnce(
+      `horizon:${modelLabel}`,
+      `clauditor: the trigger's costHorizonRequests for ${modelLabel} is not a number of zero or ` +
+        `more; using 0 instead, which disables the cost-effectiveness gate.`
     )
   }
 
@@ -143,12 +160,12 @@ export function resolveTrigger(
     // Unknown stays unknown. Never treated as unlimited: clamping a gate the
     // user configured against a guessed window would be worse than not
     // clamping at all.
-    return { peakContext, buffer, minRequestsSinceBank, gate: wanted, clampedTo: null }
+    return { peakContext, buffer, minRequestsSinceBank, costHorizonRequests, gate: wanted, clampedTo: null }
   }
 
   const ceiling = window * WINDOW_FRACTION
   if (wanted <= ceiling) {
-    return { peakContext, buffer, minRequestsSinceBank, gate: wanted, clampedTo: null }
+    return { peakContext, buffer, minRequestsSinceBank, costHorizonRequests, gate: wanted, clampedTo: null }
   }
 
   warnOnce(
@@ -158,5 +175,5 @@ export function resolveTrigger(
       `${ceiling.toLocaleString('en-GB')} instead.`
   )
 
-  return { peakContext, buffer, minRequestsSinceBank, gate: ceiling, clampedTo: ceiling }
+  return { peakContext, buffer, minRequestsSinceBank, costHorizonRequests, gate: ceiling, clampedTo: ceiling }
 }

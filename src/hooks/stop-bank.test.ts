@@ -425,6 +425,38 @@ describe('Stop hook banking, end to end', { timeout: 30_000 }, () => {
     expect(JSON.parse(out)).toEqual({})
   })
 
+  it('defers the bank while rotating would not repay within the cost horizon', () => {
+    // Opus 5 at 260k breaks even after about 6 requests, so a horizon of 2
+    // defers; the default of 0 (see the case above) leaves the gate alone.
+    mkdirSync(join(home, '.clauditor'), { recursive: true })
+    writeFileSync(
+      join(home, '.clauditor', 'config.json'),
+      JSON.stringify({ rotation: { trigger: { costHorizonRequests: 2 } } })
+    )
+    const out = runHook({
+      session_id: 'e2e-cost-defer',
+      transcript_path: transcriptWithPeak(40, 260_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out)).toEqual({})
+  })
+
+  it('banks once the cost horizon is wide enough to be repaid', () => {
+    mkdirSync(join(home, '.clauditor'), { recursive: true })
+    writeFileSync(
+      join(home, '.clauditor', 'config.json'),
+      JSON.stringify({ rotation: { trigger: { costHorizonRequests: 20 } } })
+    )
+    const out = runHook({
+      session_id: 'e2e-cost-bank',
+      transcript_path: transcriptWithPeak(40, 260_000),
+      stop_hook_active: false,
+      hook_event_name: 'Stop',
+    })
+    expect(JSON.parse(out).decision).toBe('block')
+  })
+
   it('names the peak context it is protecting', () => {
     const out = runHook({
       session_id: 'e2e-0012',
