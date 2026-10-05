@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, inject } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -14,8 +14,8 @@ import { execFileSync } from 'node:child_process'
  * once for exactly that reason.
  */
 
-const PRE_TOOL_USE = resolve(__dirname, '..', '..', 'dist', 'hooks', 'pre-tool-use.js')
-const PROMPT = resolve(__dirname, '..', '..', 'dist', 'hooks', 'user-prompt-submit.js')
+const PRE_TOOL_USE = resolve(inject('distDir'), 'hooks', 'pre-tool-use.js')
+const PROMPT = resolve(inject('distDir'), 'hooks', 'user-prompt-submit.js')
 const CWD = '/home/user/project-a'
 const SESSION = 'winddown-0001'
 

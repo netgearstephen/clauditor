@@ -12,7 +12,8 @@ export default defineConfig({
     // Runs before any test module, so modules that resolve paths from
     // homedir() at import time never touch the real home directory.
     setupFiles: ['./vitest.setup.ts'],
-    globalSetup: ['./vitest.setup.ts'],
+    // vitest.build.ts gives the subprocess suites a fresh build of the source.
+    globalSetup: ['./vitest.setup.ts', './vitest.build.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

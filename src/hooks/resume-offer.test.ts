@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, inject } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -19,7 +19,7 @@ import { encodeCwd } from '../features/journal.js'
  * would have gone on until findUserHandoff's seven-day window closed.
  */
 
-const SESSION_START = resolve(__dirname, '..', '..', 'dist', 'hooks', 'session-start.js')
+const SESSION_START = resolve(inject('distDir'), 'hooks', 'session-start.js')
 
 describe('offering a handoff to a new session, end to end', () => {
   let home: string

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, inject } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -54,7 +54,7 @@ describe('hook stdout, end to end', () => {
   it.each(HOOKS)('%s emits exactly one JSON object', (name) => {
     const out = execFileSync(
       'node',
-      [resolve(__dirname, '..', '..', 'dist', 'hooks', `${name}.js`)],
+      [resolve(inject('distDir'), 'hooks', `${name}.js`)],
       {
         input: payload,
         encoding: 'utf-8',
@@ -76,7 +76,7 @@ describe('hook stdout, end to end', () => {
     // failure on every Bash call, in every session.
     const out = execFileSync(
       'node',
-      [resolve(__dirname, '..', '..', 'dist', 'cli.js'), 'hook', 'post-tool-use'],
+      [resolve(inject('distDir'), 'cli.js'), 'hook', 'post-tool-use'],
       {
         input: JSON.stringify({
           session_id: 'bash-object-probe',

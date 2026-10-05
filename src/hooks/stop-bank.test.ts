@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, inject } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process'
  * which combinations occur.
  */
 
-const HOOK = resolve(__dirname, '..', '..', 'dist', 'hooks', 'stop.js')
+const HOOK = resolve(inject('distDir'), 'hooks', 'stop.js')
 const CWD = '/home/user/project-a'
 
 function encodeCwd(cwd: string): string {
@@ -663,7 +663,7 @@ describe('Idle timer arming, end to end', () => {
  * file naming a pid.
  */
 describe('Idle timer arming through the installed entry point', () => {
-  const CLI = resolve(__dirname, '..', '..', 'dist', 'cli.js')
+  const CLI = resolve(inject('distDir'), 'cli.js')
   let home: string
   let transcript: string
   let armedPid: number | null

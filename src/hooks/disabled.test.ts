@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, inject } from 'vitest'
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -25,7 +25,7 @@ const HOOKS = [
   'notification',
 ]
 
-const CLI = resolve(__dirname, '..', '..', 'dist', 'cli.js')
+const CLI = resolve(inject('distDir'), 'cli.js')
 
 describe('CLAUDITOR_DISABLED, through the CLI as configured', () => {
   let home: string
