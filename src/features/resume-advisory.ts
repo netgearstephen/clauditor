@@ -51,11 +51,11 @@ export interface ResumeAdvisoryInput {
 function pastePrompt(path: string): string {
   return (
     `Continue a paused task. Read ${path} in full before doing anything else. ` +
-    `Then summarise your understanding back to me in 3 to 5 bullets and confirm ` +
-    `the very next step. Do not redo any work the file marks as complete. Do not ` +
-    `modify anything listed under "Do not touch". Run the verification command ` +
-    `first, and if its output does not match what the handoff records, stop and ` +
-    `tell me the handoff is stale rather than guessing.`
+    `Do not redo any work the file marks as complete. Do not modify anything ` +
+    `listed under "Do not touch". Run the verification command first, and if its ` +
+    `output does not match what the handoff records, stop and tell me the handoff ` +
+    `is stale rather than guessing. Otherwise, state the very next step in one ` +
+    `line and carry it out without waiting for confirmation.`
   )
 }
 
