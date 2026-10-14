@@ -16,8 +16,14 @@ async function importFresh(tempDir: string) {
 
 const CWD = '/home/user/project-a'
 
-/** A transcript whose last turn is `ageMs` old and whose peak is `peak`. */
-function transcript(dir: string, ageMs: number, peak: number): string {
+/**
+ * A transcript whose last turn is `ageMs` old and whose peak is `peak`.
+ *
+ * `tier` adds the per-TTL split of the turn's cache write, which is what tells
+ * a 5-minute cache from an hour one. Left out, the turn writes nothing and the
+ * TTL is unknown.
+ */
+function transcript(dir: string, ageMs: number, peak: number, tier?: '5m' | '1h'): string {
   const path = join(dir, 'idle.jsonl')
   const ts = new Date(Date.now() - ageMs).toISOString()
   const recs = [
@@ -30,8 +36,14 @@ function transcript(dir: string, ageMs: number, peak: number): string {
         usage: {
           input_tokens: 10,
           output_tokens: 20,
-          cache_creation_input_tokens: 0,
+          cache_creation_input_tokens: tier ? 500 : 0,
           cache_read_input_tokens: peak - 10,
+          ...(tier && {
+            cache_creation: {
+              ephemeral_5m_input_tokens: tier === '5m' ? 500 : 0,
+              ephemeral_1h_input_tokens: tier === '1h' ? 500 : 0,
+            },
+          }),
         },
       },
     },
@@ -199,6 +211,45 @@ describe('the idle timer', () => {
     const deadline = Date.parse(sent.match(/until (\S+Z)/)![1])
     expect(deadline - Date.now()).toBeGreaterThan(3 * 60 * 1000)
     expect(deadline - Date.now()).toBeLessThanOrEqual(4 * 60 * 1000)
+  })
+
+  it('sends nothing to a session whose cache is on the 5-minute tier', async () => {
+    // 13 Oct: a session in usage overage writes 5-minute cache, so 56 minutes
+    // after its last turn it has been cold for 51. The wake went out on an
+    // assumed hour, and the turn it bought paid 87,475 tokens of cold write.
+    const { timer, server, received } = await arm({
+      transcriptPath: transcript(tempDir, 56 * 60 * 1000, 300_000, '5m'),
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('notify')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+    expect(received).toEqual([])
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message.includes('cache-cold'))).toBe(true)
+  })
+
+  it('sends nothing when too little of the cache is left for the woken turn', async () => {
+    // A turn queued with seconds to spare reaches the API after the cache has
+    // gone: one wake on 12 Oct fired 58m50s after the last turn and paid a
+    // full write.
+    const { timer, server, received } = await arm({
+      transcriptPath: transcript(tempDir, 59 * 60 * 1000, 300_000, '1h'),
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('notify')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+    expect(received).toEqual([])
+  })
+
+  it('still sends to an hour-tier session with the headroom to use it', async () => {
+    const { timer, server, received } = await arm({
+      transcriptPath: transcript(tempDir, 56 * 60 * 1000, 300_000, '1h'),
+    })
+    expect(await timer.runIdleTimerOnce('idle-1')).toBe('bank')
+    await new Promise((r) => setTimeout(r, 50))
+    server.close()
+    expect(received[1]).toContain('cheapest moment')
   })
 
   it('sends nothing to a session parked on a prompt', async () => {
