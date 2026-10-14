@@ -258,6 +258,117 @@ describe('journal', () => {
     })
   })
 
+  describe('cacheTtlMs', () => {
+    function turn(cacheCreation?: object): object {
+      return {
+        type: 'assistant',
+        message: { usage: cacheCreation ? { cache_creation: cacheCreation } : {} },
+      }
+    }
+
+    it('reads the 5-minute tier from a short-only write', async () => {
+      const { cacheTtlMs, CACHE_TTL_5M_MS } = await importFresh(tempDir)
+      const path = transcriptOf(
+        [turn({ ephemeral_5m_input_tokens: 2022, ephemeral_1h_input_tokens: 0 })],
+        tempDir
+      )
+      expect(cacheTtlMs(path)).toBe(CACHE_TTL_5M_MS)
+    })
+
+    it('reads a write split across both tiers as the short one', async () => {
+      const { cacheTtlMs, CACHE_TTL_5M_MS } = await importFresh(tempDir)
+      const path = transcriptOf(
+        [turn({ ephemeral_5m_input_tokens: 300, ephemeral_1h_input_tokens: 9000 })],
+        tempDir
+      )
+      expect(cacheTtlMs(path)).toBe(CACHE_TTL_5M_MS)
+    })
+
+    it('follows the latest write when the tier changes', async () => {
+      const { cacheTtlMs, CACHE_TTL_MS } = await importFresh(tempDir)
+      const path = transcriptOf(
+        [
+          turn({ ephemeral_5m_input_tokens: 2022, ephemeral_1h_input_tokens: 0 }),
+          turn({ ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 4000 }),
+        ],
+        tempDir
+      )
+      expect(cacheTtlMs(path)).toBe(CACHE_TTL_MS)
+    })
+
+    it('looks past a turn that wrote nothing', async () => {
+      const { cacheTtlMs, CACHE_TTL_5M_MS } = await importFresh(tempDir)
+      const path = transcriptOf(
+        [
+          turn({ ephemeral_5m_input_tokens: 2022, ephemeral_1h_input_tokens: 0 }),
+          turn({ ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 }),
+          { type: 'user', message: { content: 'carry on' } },
+        ],
+        tempDir
+      )
+      expect(cacheTtlMs(path)).toBe(CACHE_TTL_5M_MS)
+    })
+
+    it('assumes the hour when no turn reports a split', async () => {
+      const { cacheTtlMs, CACHE_TTL_MS } = await importFresh(tempDir)
+      expect(cacheTtlMs(transcriptOf([turn()], tempDir))).toBe(CACHE_TTL_MS)
+      expect(cacheTtlMs(null)).toBe(CACHE_TTL_MS)
+      expect(cacheTtlMs(join(tempDir, 'absent.jsonl'))).toBe(CACHE_TTL_MS)
+    })
+
+    it('makes isCacheWarm cold after five minutes on the short tier', async () => {
+      const { isCacheWarm } = await importFresh(tempDir)
+      const path = transcriptOf(
+        [
+          {
+            ...turn({ ephemeral_5m_input_tokens: 2022, ephemeral_1h_input_tokens: 0 }),
+            timestamp: '2026-10-13T17:33:48Z',
+          },
+        ],
+        tempDir
+      )
+      expect(isCacheWarm(path, Date.parse('2026-10-13T17:37:00Z'))).toBe(true)
+      expect(isCacheWarm(path, Date.parse('2026-10-13T17:39:00Z'))).toBe(false)
+    })
+  })
+
+  describe('wakeExpiresAt', () => {
+    const HEADER = '<cross-session-message from="uds:/tmp/x.sock" from-name="a>b" from-mode="bypass">'
+
+    it('reads the deadline from the tag opening a wrapped wake', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      const prompt = `${HEADER}\nclauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\n\nbody\n</cross-session-message>`
+      expect(wakeExpiresAt(prompt)).toBe(Date.parse('2026-10-13T18:34:17.000Z'))
+    })
+
+    it('tolerates leading whitespace around the tag', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      const prompt = `\n ${HEADER}\n  clauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\n`
+      expect(wakeExpiresAt(prompt)).toBe(Date.parse('2026-10-13T18:34:17.000Z'))
+    })
+
+    it('is null for a date that does not parse', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      expect(wakeExpiresAt(`${HEADER}\nclauditor-wake-expires-at: soon\n`)).toBeNull()
+    })
+
+    it('is null for a cross-session message with no tag', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      expect(wakeExpiresAt(`${HEADER}\nhello\n</cross-session-message>`)).toBeNull()
+    })
+
+    it('is null when the tag does not open the body', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      const prompt = `${HEADER}\nhave a look at this:\nclauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\n`
+      expect(wakeExpiresAt(prompt)).toBeNull()
+    })
+
+    it('is null for a typed prompt that is not wrapped', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      expect(wakeExpiresAt('clauditor-wake-expires-at: 2026-10-13T18:34:17.000Z')).toBeNull()
+    })
+  })
+
   describe('shouldWriteJournal', () => {
     it('writes when there is no journal yet', async () => {
       const { shouldWriteJournal } = await importFresh(tempDir)
@@ -1302,7 +1413,10 @@ describe('journal', () => {
         now,
         expiresAt: now + 5 * 60 * 1000,
       })
-      expect(text.startsWith('clauditor: this request was queued at')).toBe(true)
+      // The tag first, because UserPromptSubmit reads it to refuse a late wake
+      // before any model turn, then the prose for a hook too old to know it.
+      expect(text.startsWith('clauditor-wake-expires-at: 2026-09-16T10:05:00.000Z\n')).toBe(true)
+      expect(text).toContain('clauditor: this request was queued at')
       expect(text).toContain('2026-09-16T10:00:00.000Z')
       expect(text).toContain('2026-09-16T10:05:00.000Z')
       expect(text).toContain(WAKE_EXPIRED)
