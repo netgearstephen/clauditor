@@ -878,8 +878,8 @@ export type JudgementSource = 'banked' | 'compaction'
  */
 export const PASTE_PROMPT =
   'Continue a paused task. Read `<path>` in full before doing anything else. ' +
-  'Then summarise your understanding back to me in 3 to 5 bullets and confirm the very ' +
-  'next step. Do not redo any work the file marks as complete. Do not modify anything ' +
+  'Then carry on from the very next step it names, without waiting for me to confirm ' +
+  'it. Do not redo any work the file marks as complete. Do not modify anything ' +
   'listed under "Do not touch". Run the verification command first, and if its output ' +
   'does not match what the handoff records, stop and tell me the handoff is stale rather ' +
   'than guessing.'
@@ -1175,8 +1175,8 @@ function handOverNow(): string {
     `written: (a) \`herdr pane split\` for a new pane; (b) \`herdr agent start <name> ` +
     `--kind claude --pane <new pane>\` in it; (c) \`herdr agent prompt\` to submit the ` +
     `paste prompt below, with <path> replaced by the file you wrote; (d) \`herdr pane ` +
-    `read\` on that pane until the successor has summarised the handoff and confirmed its ` +
-    `next step. Then make the reply. If your instructions do not call for it, skip this ` +
+    `read\` on that pane once, to confirm the successor has started on its next step. ` +
+    `Then make the reply. If your instructions do not call for it, skip this ` +
     `paragraph. Either way, no new feature work.\n\n`
   )
 }
