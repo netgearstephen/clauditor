@@ -41,8 +41,7 @@ The model replies with the resume prompt and nothing else:
 
 ```
 Continue a paused task. Read `/Users/you/.claude/handoffs/wire-clauditor-into-handoff-20260910-1642.md`
-in full before doing anything else. Then carry on from the very next step it names,
-without waiting for me to confirm it. ...
+in full before doing anything else. Do not redo any work the file marks as complete. ...
 ```
 
 **Idle sessions are woken to bank.** A session left open and idle would lose its cache without ever banking. The timer is a detached one-shot per session, armed by the Stop hook at the end of every turn and by the Notification hook when a turn parks on a permission prompt or a question. Stop cannot cover that second case: a parked turn has not ended, so no Stop fires for it, and a session that parks before its first Stop has no timer at all. Both arming points measure the window from the last real turn in the transcript, not from the hook that armed it.

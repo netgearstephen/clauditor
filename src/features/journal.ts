@@ -878,11 +878,11 @@ export type JudgementSource = 'banked' | 'compaction'
  */
 export const PASTE_PROMPT =
   'Continue a paused task. Read `<path>` in full before doing anything else. ' +
-  'Then carry on from the very next step it names, without waiting for me to confirm ' +
-  'it. Do not redo any work the file marks as complete. Do not modify anything ' +
-  'listed under "Do not touch". Run the verification command first, and if its output ' +
-  'does not match what the handoff records, stop and tell me the handoff is stale rather ' +
-  'than guessing.'
+  'Do not redo any work the file marks as complete. Do not modify anything listed under ' +
+  '"Do not touch". Run the verification command first, and if its output does not match ' +
+  'what the handoff records, stop and tell me the handoff is stale rather than guessing. ' +
+  'Otherwise, state the very next step in one line and carry it out without waiting for ' +
+  'confirmation.'
 
 /** Where a handoff with this title or mission line belongs on disk. */
 export function handoffTarget(slug: string, now: Date = new Date()): string {

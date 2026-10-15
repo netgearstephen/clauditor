@@ -15,6 +15,9 @@ import { logActivity } from '../features/activity-log.js'
 import { readConfig } from '../config.js'
 import { readStdin, outputDecision, writeJsonFileAtomic, readJsonFile, isHookEntry } from './shared.js'
 import { effectiveTurnCost, rawTurnTokens, getPricingForModel } from '../features/cost-tracker.js'
+import { resolveTrigger } from '../features/trigger.js'
+import { readSessionBank } from '../features/journal.js'
+import { shouldNudgeRotation, readNudgedAt, recordNudge, rotationNudgeMessage } from '../features/rotation-nudge.js'
 
 /**
  * PostToolUse hook handler.
@@ -410,6 +413,33 @@ async function checkSessionHealth(sessionId: string): Promise<HookDecision | nul
     const isOpus = model?.includes('opus') ?? false
     const contextLimit = isOpus ? 1_000_000 : 200_000
     const pct = Math.round((contextSize / contextLimit) * 100)
+
+    // Banking waits for Stop, so a long turn has to be asked to reach one.
+    const config = readConfig()
+    if (config.rotation.enabled) {
+      const { gate } = resolveTrigger(model)
+      // A synthetic turn (an error or a limit notice) carries no usage.
+      const lastReal = [...turns].reverse().find((t) => t.usage.cache_read_input_tokens + t.usage.input_tokens > 0)
+      const liveContext = lastReal
+        ? lastReal.usage.input_tokens + lastReal.usage.cache_creation_input_tokens + lastReal.usage.cache_read_input_tokens
+        : 0
+      const facts = {
+        context: liveContext,
+        gate,
+        growth: config.rotation.reBankGrowth,
+        nudgedAt: readNudgedAt(sessionId),
+        bankedPeak: readSessionBank(sessionId)?.peakContext ?? 0,
+      }
+      if (shouldNudgeRotation(facts)) {
+        recordNudge(sessionId, liveContext)
+        warnings.push(rotationNudgeMessage(liveContext, gate))
+        logActivity({
+          type: 'context_warning',
+          session: sessionId.slice(0, 8),
+          message: `mid-turn rotation nudge at ${liveContext} context (gate ${gate})`,
+        }).catch(() => {})
+      }
+    }
 
     if (pct >= 95) {
       warnings.push(
