@@ -81,6 +81,54 @@ export class SessionWatcher {
     }
   }
 
+  /**
+   * Parse only the newest transcripts, bounded by count and total bytes.
+   * scanAll parses every transcript ever written (GBs of heap), which is
+   * fine for an on-demand command but froze the machine when every pane of
+   * a herdr restore ran it from the SessionStart hook at once.
+   */
+  async scanRecent({ maxFiles, maxBytes = Infinity }: { maxFiles: number; maxBytes?: number }): Promise<void> {
+    const dir = this.projectPath
+      ? resolve(this.projectsDir, encodeProjectPath(this.projectPath))
+      : this.projectsDir
+
+    const files: { path: string; mtime: number; size: number }[] = []
+    await this.collectTranscripts(dir, files)
+    files.sort((a, b) => b.mtime - a.mtime)
+
+    let taken = 0
+    let bytes = 0
+    for (const file of files) {
+      if (taken >= maxFiles) break
+      if (bytes + file.size > maxBytes) continue
+      taken++
+      bytes += file.size
+      await this.processFile(file.path)
+    }
+  }
+
+  private async collectTranscripts(
+    dir: string,
+    out: { path: string; mtime: number; size: number }[],
+  ): Promise<void> {
+    try {
+      const entries = await readdir(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const fullPath = resolve(dir, entry.name)
+        if (entry.isDirectory()) {
+          await this.collectTranscripts(fullPath, out)
+        } else if (entry.name.endsWith('.jsonl')) {
+          try {
+            const s = await stat(fullPath)
+            out.push({ path: fullPath, mtime: s.mtimeMs, size: s.size })
+          } catch {}
+        }
+      }
+    } catch {
+      // Ignore errors from missing directories
+    }
+  }
+
   private async scanDirectory(dir: string): Promise<void> {
     try {
       const entries = await readdir(dir, { withFileTypes: true })
