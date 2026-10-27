@@ -205,7 +205,8 @@ async function buildSessionStartContext(
 
     const store = new SessionStore()
     const watcher = new SessionWatcher(store, { projectsDir })
-    await watcher.scanAll()
+    // Bounded: a full scan costs ~4 GB per session and herdr starts every pane at once
+    await watcher.scanRecent({ maxFiles: 50, maxBytes: 64 * 1024 * 1024 })
 
     const sessions = store.getAll()
     const patterns = detectWorkflowPatterns(sessions)

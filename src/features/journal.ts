@@ -983,6 +983,7 @@ const JUDGEMENT_SECTIONS = [
   'Dead ends',
   'Gotchas and constraints',
   'Open questions and blockers',
+  'Stephen answered, not yet logged',
   'The very next step',
   'Do not touch',
   'Low confidence',
@@ -1212,10 +1213,15 @@ export function bankInstruction(
     `That is the one thing a later session cannot recover: their work lands after this ` +
     `document is written. Record them and leave them running; do not stop them, and do ` +
     `not wait for them before writing.\n\n` +
-    `Omit any section with no real content rather than stubbing it. Do NOT write a ` +
+    `Omit any section with no real content rather than stubbing it, except Stephen answered, not yet logged. Do NOT write a ` +
     `header block, Files touched, Required reading, or Verification command: those are ` +
     `derived mechanically at read time and anything you write there would be a second, ` +
     `staler copy.\n\n` +
+    `Under ## Stephen answered, not yet logged, list every answer the user gave to an open ` +
+    `question that is not yet recorded in the golden decisions file ` +
+    `(~/.claude/research/stephen-decision-criteria-2026-09-22.md) or w5-waiting.md, ` +
+    `verbatim where possible. Write "none" when there are none: this section is never ` +
+    `omitted, and a successor logs these first.\n\n` +
     `Rules: declarative for state, imperative only for The very next step and Do not touch. ` +
     `Write "X is not yet implemented", never "implement X". Quote the user's own rationale ` +
     `where you can. British English, no em dashes. Absolute paths only.\n\n` +
@@ -1246,8 +1252,8 @@ function handOverNow(): string {
     `written: (a) \`herdr pane split\` for a new pane; (b) \`herdr agent start <name> ` +
     `--kind claude --pane <new pane>\` in it; (c) \`herdr agent prompt\` to submit the ` +
     `paste prompt below, with <path> replaced by the file you wrote; (d) \`herdr pane ` +
-    `read\` on that pane until the successor has summarised the handoff and confirmed its ` +
-    `next step. Then make the reply. If your instructions do not call for it, skip this ` +
+    `read\` on that pane once, to confirm the successor has started on its next step. ` +
+    `Then make the reply. If your instructions do not call for it, skip this ` +
     `paragraph. Either way, no new feature work.\n\n`
   )
 }
