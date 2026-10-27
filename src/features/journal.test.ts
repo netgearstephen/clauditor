@@ -343,8 +343,26 @@ describe('journal', () => {
 
     it('tolerates leading whitespace around the tag', async () => {
       const { wakeExpiresAt } = await importFresh(tempDir)
-      const prompt = `\n ${HEADER}\n  clauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\n`
+      const prompt = `\n ${HEADER}\n  clauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\n</cross-session-message>\n`
       expect(wakeExpiresAt(prompt)).toBe(Date.parse('2026-10-13T18:34:17.000Z'))
+    })
+
+    it('is null when the user adds text outside a pasted wake', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      const wake = `${HEADER}\nclauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\n\nbody\n</cross-session-message>`
+      expect(wakeExpiresAt(`${wake}\nWhy was this wake sent?`)).toBeNull()
+    })
+
+    it('is null for a wake that is never closed', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      expect(wakeExpiresAt(`${HEADER}\nclauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\nbody`)).toBeNull()
+    })
+
+    it('still reads the deadline when the inbox delivers several messages at once', async () => {
+      const { wakeExpiresAt } = await importFresh(tempDir)
+      const wake = `${HEADER}\nclauditor-wake-expires-at: 2026-10-13T18:34:17.000Z\n\nbody\n</cross-session-message>`
+      const other = `${HEADER}\nhello\n</cross-session-message>`
+      expect(wakeExpiresAt(`${wake}\n${other}\n`)).toBe(Date.parse('2026-10-13T18:34:17.000Z'))
     })
 
     it('is null for a date that does not parse', async () => {

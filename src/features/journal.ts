@@ -901,6 +901,9 @@ export const WAKE_EXPIRED = 'clauditor: wake expired, nothing banked'
  */
 export const WAKE_ARRIVAL_MARGIN_MS = 60 * 1000
 
+/** One whole inbox message, header line to closing tag. */
+const WAKE_ENVELOPE = /<cross-session-message [^\n]*>\n[\s\S]*?<\/cross-session-message>/g
+
 /** The machine-readable deadline a queued wake opens with. */
 const WAKE_EXPIRES_TAG = 'clauditor-wake-expires-at:'
 
@@ -912,8 +915,13 @@ const WAKE_EXPIRES_TAG = 'clauditor-wake-expires-at:'
  * matches. The tag must open the message body, where bankInstruction puts it,
  * so a peer quoting one further down does not either. The header is matched to
  * the end of its line, since a from-name may itself contain a '>'.
+ *
+ * The prompt must hold nothing but complete envelopes: a user who pastes an
+ * expired wake and asks about it below must not have the question blocked.
+ * Several envelopes are fine, as the inbox may deliver queued messages at once.
  */
 export function wakeExpiresAt(prompt: string): number | null {
+  if (prompt.replace(WAKE_ENVELOPE, '').trim() !== '') return null
   const m = prompt.match(
     /^\s*<cross-session-message [^\n]*>\n\s*clauditor-wake-expires-at: (\S+)/
   )
