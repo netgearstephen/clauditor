@@ -27,6 +27,16 @@ import { readConfig } from '../config.js'
  */
 export const IDLE_BANK_DELAY_MS = 55 * 60 * 1000
 
+/**
+ * The least of the cache that must be left for a wake to be worth sending.
+ *
+ * The poller checks once a minute and a re-derived fire time can land late, so
+ * the fifty-five minutes above is a target, not a guarantee: one wake on 12 Oct
+ * went out 58m50s after the last turn and paid a full write. Two minutes covers
+ * the queue, the hooks and the request reaching the API on an ordinary day.
+ */
+export const WAKE_HEADROOM_MS = 2 * 60 * 1000
+
 /** Everything the verdict depends on, all of it re-read at fire time. */
 export interface IdleBankFacts {
   /** Age of the last turn in the transcript; null when it cannot be read. */
@@ -72,6 +82,13 @@ export interface IdleBankFacts {
    * absence has to mean "not known to be parked" rather than "parked".
    */
   awaitingToolResult?: boolean
+  /**
+   * The TTL the session's cache is on, from cacheTtlMs.
+   *
+   * Optional for the same reason as the field above, and absence means the hour
+   * this used to assume.
+   */
+  cacheTtlMs?: number
 }
 
 export type IdleBankVerdict =
@@ -124,7 +141,11 @@ export function shouldIdleBank(facts: IdleBankFacts): IdleBankVerdict {
   // paying for: a cold bank costs full price, and a session that has exited
   // has nothing to wake.
   if (!facts.socketExists) return { act: 'notify', reason: 'session-gone' }
-  if (facts.msSinceLastTurn >= CACHE_TTL_MS) {
+  // Cold already, or too close to it for the woken turn to reach the API in
+  // time. A session in overage is on the 5-minute tier, which fifty-five
+  // minutes of idleness has outlived many times over.
+  const ttl = facts.cacheTtlMs ?? CACHE_TTL_MS
+  if (facts.msSinceLastTurn >= ttl - WAKE_HEADROOM_MS) {
     return { act: 'notify', reason: 'cache-cold' }
   }
   // A parked session is warm but cannot take the turn: its queue holds the wake

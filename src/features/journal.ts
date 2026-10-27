@@ -60,6 +60,48 @@ const FACTS_SCRIPT = resolve(
 export const CACHE_TTL_MS = 60 * 60 * 1000
 
 /**
+ * The short TTL, which is not a choice made here: a session in usage overage
+ * drops to it. On 13 Oct two sessions had been writing 5-minute cache for the
+ * whole evening while every deadline clauditor set assumed the hour.
+ */
+export const CACHE_TTL_5M_MS = 5 * 60 * 1000
+
+/**
+ * The TTL the session's cache is actually on, read from its last cache write.
+ *
+ * Each assistant turn's usage splits its write by tier, and the latest write
+ * is the tier now in force. A turn that wrote nothing says nothing, so the
+ * search goes back to the last one that did. No write found is the old
+ * assumption, the hour, not a guess at the shorter one.
+ */
+export function cacheTtlMs(transcriptPath: string | null): number {
+  if (!transcriptPath) return CACHE_TTL_MS
+  let content: string
+  try {
+    content = readFileSync(transcriptPath, 'utf-8')
+  } catch {
+    return CACHE_TTL_MS
+  }
+  const lines = content.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    try {
+      const r = JSON.parse(line)
+      if (r.type !== 'assistant') continue
+      const split = r.message?.usage?.cache_creation
+      const hour = split?.ephemeral_1h_input_tokens ?? 0
+      const five = split?.ephemeral_5m_input_tokens ?? 0
+      // A write split across both tiers puts its newest prefix on the short
+      // one, and that prefix is the part the next turn reads first.
+      if (five > 0) return CACHE_TTL_5M_MS
+      if (hour > 0) return CACHE_TTL_MS
+    } catch {}
+  }
+  return CACHE_TTL_MS
+}
+
+/**
  * How stale the mechanical journal is allowed to get before it is rewritten
  * even though nothing detectably changed.
  *
@@ -668,7 +710,7 @@ export function isCacheWarm(
   now: number = Date.now()
 ): boolean {
   const age = msSinceLastTurn(transcriptPath, now)
-  return age === null || age < CACHE_TTL_MS
+  return age === null || age < cacheTtlMs(transcriptPath)
 }
 
 /**
@@ -849,6 +891,44 @@ export const BANK_MARKER = '[clauditor-banked-handoff]'
  * nothing and let SessionStart offer the mechanical half to the next session.
  */
 export const WAKE_EXPIRED = 'clauditor: wake expired, nothing banked'
+
+/**
+ * How long before its deadline a wake is refused anyway.
+ *
+ * The send side keeps WAKE_HEADROOM_MS for the same reason: a wake let through
+ * a few seconds before expiry still has a request to build and send, and
+ * reaches the API after the cache has gone.
+ */
+export const WAKE_ARRIVAL_MARGIN_MS = 60 * 1000
+
+/** One whole inbox message, header line to closing tag. */
+const WAKE_ENVELOPE = /<cross-session-message [^\n]*>\n[\s\S]*?<\/cross-session-message>/g
+
+/** The machine-readable deadline a queued wake opens with. */
+const WAKE_EXPIRES_TAG = 'clauditor-wake-expires-at:'
+
+/**
+ * When a wake delivered to this session's inbox stops being worth reading.
+ *
+ * Null for anything that is not one: only the inbox wraps a prompt in
+ * cross-session-message, so a user pasting the text to ask about it never
+ * matches. The tag must open the message body, where bankInstruction puts it,
+ * so a peer quoting one further down does not either. The header is matched to
+ * the end of its line, since a from-name may itself contain a '>'.
+ *
+ * The prompt must hold nothing but complete envelopes: a user who pastes an
+ * expired wake and asks about it below must not have the question blocked.
+ * Several envelopes are fine, as the inbox may deliver queued messages at once.
+ */
+export function wakeExpiresAt(prompt: string): number | null {
+  if (prompt.replace(WAKE_ENVELOPE, '').trim() !== '') return null
+  const m = prompt.match(
+    /^\s*<cross-session-message [^\n]*>\n\s*clauditor-wake-expires-at: (\S+)/
+  )
+  if (!m) return null
+  const t = Date.parse(m[1])
+  return Number.isNaN(t) ? null : t
+}
 
 /**
  * Where a banked judgement came from.
@@ -1092,8 +1172,13 @@ export function bankInstruction(
   // A request read down the Stop hook needs no deadline; one queued to a live
   // session's inbox does, because a park can hold it for hours and a cold wake
   // spends full price on the one thing this exists to get cheaply.
+  //
+  // The tag line is what enforces it: UserPromptSubmit refuses an expired wake
+  // before any model turn. The prose stays as the fallback for an install whose
+  // hook predates the tag, and costs nothing when the wake is read in time.
   const deadline = expiresAt
-    ? `clauditor: this request was queued at ${new Date(now).toISOString()} and is worth ` +
+    ? `${WAKE_EXPIRES_TAG} ${new Date(expiresAt).toISOString()}\n\n` +
+      `clauditor: this request was queued at ${new Date(now).toISOString()} and is worth ` +
       `acting on only while the cache from that moment is still warm, which it is until ` +
       `${new Date(expiresAt).toISOString()}. If the time now is later than that, the cache ` +
       `has gone and writing this would cost full price rather than 0.1x, which is the one ` +

@@ -3,6 +3,7 @@ import { logActivity } from '../features/activity-log.js'
 import {
   awaitingToolResult,
   bankInstruction,
+  cacheTtlMs,
   cwdFromTranscript,
   handoffStamp,
   markBankRequested,
@@ -97,6 +98,7 @@ export function gatherIdleFacts(file: IdleTimerFile, now: number = Date.now()): 
     ),
     socketExists: socketStillOurs(file),
     awaitingToolResult: awaitingToolResult(file.transcriptPath),
+    cacheTtlMs: cacheTtlMs(file.transcriptPath),
   }
 }
 
@@ -152,10 +154,10 @@ export async function runIdleTimerOnce(
         bankInstruction(facts.peakContext, {
           stamp: handoffStamp(),
           now,
-          // The cache dies an hour after the last real turn, not this send, and the
-          // poller fires five minutes short. Absolute, because the model reading it
-          // cannot know how long it sat in the queue.
-          expiresAt: now - (facts.msSinceLastTurn ?? 0) + CACHE_TTL_MS,
+          // The cache dies a TTL after the last real turn, not this send. Absolute,
+          // because the hook that refuses a late wake, and the model if that hook
+          // is older than the tag, cannot know how long it sat in the queue.
+          expiresAt: now - (facts.msSinceLastTurn ?? 0) + (facts.cacheTtlMs ?? CACHE_TTL_MS),
           // The session's OWN bank. Never state.promotedPath: that told a
           // session which had never banked to overwrite another session's
           // document, and destroyed a real handoff on 2026-09-10.
