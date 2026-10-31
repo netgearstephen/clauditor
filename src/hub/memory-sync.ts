@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from '../claude-dir.js'
 /**
  * Auto-memory team sync — reads Claude Code's auto-memory and pushes to hub.
  *
@@ -32,11 +33,11 @@ export function readAutoMemory(cwd: string): MemoryEntry[] {
   const entries: MemoryEntry[] = []
 
   // Find the memory directory — Claude Code uses the encoded project path
-  const claudeProjectsDir = resolve(homedir(), '.claude', 'projects')
-  if (!existsSync(claudeProjectsDir)) return entries
+  const projectsRoot = claudeProjectsDir()
+  if (!existsSync(projectsRoot)) return entries
 
   // Find the project directory that matches this cwd
-  const memoryDir = findMemoryDir(cwd, claudeProjectsDir)
+  const memoryDir = findMemoryDir(cwd, projectsRoot)
   if (!memoryDir || !existsSync(memoryDir)) return entries
 
   const files = readdirSync(memoryDir).filter(

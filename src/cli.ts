@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from './claude-dir.js'
 import { Command } from 'commander'
 import { resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -1769,7 +1770,7 @@ program
     let transcriptPath = options.transcript
     if (!transcriptPath) {
       // Auto-detect: find the most recent transcript in ~/.claude/projects/
-      const claudeDir = resolve(homedir(), '.claude', 'projects')
+      const claudeDir = claudeProjectsDir()
       try {
         const projectDirs = readdirSync(claudeDir, { withFileTypes: true })
           .filter(d => d.isDirectory())

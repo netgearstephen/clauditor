@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from '../claude-dir.js'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve, basename } from 'node:path'
@@ -780,7 +781,7 @@ function extractUserMessage(record: Record<string, unknown>): string | null {
  * Find transcript path for a session ID.
  */
 export function findTranscriptPathSync(sessionId: string): string | null {
-  const projectsDir = resolve(homedir(), '.claude/projects')
+  const projectsDir = claudeProjectsDir()
   try {
     const dirs = readdirSync(projectsDir, { withFileTypes: true })
     for (const dir of dirs) {

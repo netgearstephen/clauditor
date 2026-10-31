@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from '../claude-dir.js'
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { readdir, stat } from 'node:fs/promises'
@@ -47,7 +48,7 @@ async function buildSessionStartContext(
 
   try {
     // Find recent sessions for this project
-    const projectsDir = resolve(homedir(), '.claude/projects')
+    const projectsDir = claudeProjectsDir()
     const recentIssues = await checkRecentSessions(projectsDir)
 
     if (recentIssues.length > 0) {

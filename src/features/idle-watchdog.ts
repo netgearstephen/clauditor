@@ -11,6 +11,7 @@ import {
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
+import { claudeSessionsDir } from '../claude-dir.js'
 import { resolve } from 'node:path'
 import { connect } from 'node:net'
 import { CACHE_TTL_MS, cwdFromTranscript, msSinceLastTurn } from './journal.js'
@@ -360,8 +361,24 @@ export interface InboxAuth {
   mode: 'bypass' | 'prompting'
 }
 
-/** Where Claude Code publishes one key file and one registry entry per session. */
-export const SESSIONS_DIR = resolve(homedir(), '.claude', 'sessions')
+/**
+ * Where Claude Code publishes one key file and one registry entry per session.
+ * Resolved per call: a session launched with CLAUDE_CONFIG_DIR keeps them there.
+ */
+export function sessionsDir(): string {
+  return claudeSessionsDir()
+}
+
+/** Why readInboxAuth found nothing, for the activity log. */
+export function inboxAuthFailure(socketPath: string, dir: string = sessionsDir()): string {
+  const pid = socketPath.match(/(\d+)\.sock$/)?.[1]
+  if (!pid) return `socket path ${socketPath} has no pid`
+  const hash = createHash('sha256').update(socketPath).digest('hex')
+  const key = resolve(dir, `${pid}.${hash}.key`)
+  return existsSync(key)
+    ? `key file ${key} has no usable peerToken`
+    : `no key file at ${key} (sessions dir ${dir})`
+}
 
 /** The command line of a pid, empty when it cannot be read. */
 function commandOfPid(pid: number): string {
@@ -387,9 +404,10 @@ function commandOfPid(pid: number): string {
  */
 export function readInboxAuth(
   socketPath: string,
-  sessionsDir: string = SESSIONS_DIR,
+  dir?: string,
   commandOf: (pid: number) => string = commandOfPid
 ): InboxAuth | null {
+  const sessionsDir_ = dir ?? sessionsDir()
   const pid = Number(socketPath.match(/(\d+)\.sock$/)?.[1])
   if (!Number.isFinite(pid)) return null
   // The key file is named for the socket it authenticates, so a session that
@@ -398,7 +416,7 @@ export function readInboxAuth(
   let peerToken: unknown
   try {
     peerToken = JSON.parse(
-      readFileSync(resolve(sessionsDir, `${pid}.${hash}.key`), 'utf-8')
+      readFileSync(resolve(sessionsDir_, `${pid}.${hash}.key`), 'utf-8')
     ).peerToken
   } catch {
     return null
@@ -408,7 +426,7 @@ export function readInboxAuth(
   // costs the message its label, never its delivery.
   let name = ''
   try {
-    name = JSON.parse(readFileSync(resolve(sessionsDir, `${pid}.json`), 'utf-8')).name ?? ''
+    name = JSON.parse(readFileSync(resolve(sessionsDir_, `${pid}.json`), 'utf-8')).name ?? ''
   } catch {}
   // Attesting a class the session is not in earns a mode-mismatch hold, which
   // is the same dead end as attesting nothing, so this never guesses upwards.

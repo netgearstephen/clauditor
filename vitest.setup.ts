@@ -20,6 +20,8 @@ import { join } from 'node:path'
 const sandbox = mkdtempSync(join(tmpdir(), 'clauditor-test-home-'))
 process.env.HOME = sandbox
 process.env.USERPROFILE = sandbox
+// A developer shell launched with CLAUDE_CONFIG_DIR must not redirect the tests' ~/.claude fixtures.
+delete process.env.CLAUDE_CONFIG_DIR
 
 export function teardown() {
   rmSync(sandbox, { recursive: true, force: true })

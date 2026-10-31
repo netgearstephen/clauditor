@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from '../claude-dir.js'
 import { readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync } from 'node:fs'
 import { basename, resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
@@ -68,7 +69,7 @@ export function outputDecision(decision: HookDecision): void {
  * Synchronous — safe for hooks.
  */
 export function findTranscriptPathSync(sessionId: string): string | null {
-  const projectsDir = resolve(homedir(), '.claude/projects')
+  const projectsDir = claudeProjectsDir()
   try {
     const dirs = readdirSync(projectsDir, { withFileTypes: true })
     for (const dir of dirs) {

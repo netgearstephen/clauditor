@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from '../claude-dir.js'
 /**
  * Subagent Intelligence — extract signals from Claude Code's subagent metadata.
  *
@@ -214,18 +215,18 @@ export function detectPatterns(signals: SubagentSignal[]): Array<{
 // ─── Helpers ────────────────────────────────────────────────
 
 function findProjectDir(cwd: string): string | null {
-  const claudeProjectsDir = resolve(homedir(), '.claude', 'projects')
-  if (!existsSync(claudeProjectsDir)) return null
+  const projectsRoot = claudeProjectsDir()
+  if (!existsSync(projectsRoot)) return null
 
   try {
-    const dirs = readdirSync(claudeProjectsDir, { withFileTypes: true })
+    const dirs = readdirSync(projectsRoot, { withFileTypes: true })
       .filter(d => d.isDirectory())
 
     const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-')
 
     for (const dir of dirs) {
       if (dir.name.includes(encoded.slice(0, 30)) || encoded.includes(dir.name.slice(0, 30))) {
-        return resolve(claudeProjectsDir, dir.name)
+        return resolve(projectsRoot, dir.name)
       }
     }
   } catch {}
