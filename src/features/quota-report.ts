@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from '../claude-dir.js'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve, sep, basename } from 'node:path'
@@ -40,7 +41,7 @@ export interface QuotaBrief {
  * Deduplicates continued sessions by message ID.
  */
 export function computeQuotaBrief(days: number = 7): QuotaBrief {
-  const projectsDir = resolve(homedir(), '.claude/projects')
+  const projectsDir = claudeProjectsDir()
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
   const sessions: SessionReport[] = []
   const seenMessageIds = new Set<string>()
@@ -149,7 +150,7 @@ export interface TimeAnalysis {
  * This can reveal peak-hour pricing multipliers.
  */
 export function computeTimeAnalysis(days: number = 7): TimeAnalysis {
-  const projectsDir = resolve(homedir(), '.claude/projects')
+  const projectsDir = claudeProjectsDir()
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
   const seenMessageIds = new Set<string>()
 

@@ -1,3 +1,4 @@
+import { claudeProjectsDir } from '../claude-dir.js'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
@@ -555,7 +556,7 @@ async function checkSessionHealth(sessionId: string): Promise<HookDecision | nul
  * Find the transcript path for a session by scanning the projects directory.
  */
 async function findTranscriptPath(sessionId: string): Promise<string | null> {
-  const projectsDir = resolve(homedir(), '.claude/projects')
+  const projectsDir = claudeProjectsDir()
   try {
     const { readdir } = await import('node:fs/promises')
     const projectDirs = await readdir(projectsDir, { withFileTypes: true })

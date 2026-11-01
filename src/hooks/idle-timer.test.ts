@@ -5,9 +5,18 @@ import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
 
+const notifications: { title: string; message: string }[] = []
+
 async function importFresh(tempDir: string) {
   vi.resetModules()
   vi.doMock('node:os', () => ({ homedir: () => tempDir }))
+  // Never pop a real desktop notification from a test run.
+  notifications.length = 0
+  vi.doMock('../notify.js', () => ({
+    notifyDesktop: async (title: string, message: string) => {
+      notifications.push({ title, message })
+    },
+  }))
   return {
     timer: await import('./idle-timer.js'),
     w: await import('../features/idle-watchdog.js'),
@@ -280,6 +289,18 @@ describe('the idle timer', () => {
     expect(
       events.some((e) => e.message === 'idle bank could not be sent at 300000 peak context')
     ).toBe(true)
+  })
+
+  it('says why and notifies the desktop when the inbox key cannot be read', async () => {
+    const fakeSocket = join(tempDir, 'fake.sock')
+    writeFileSync(fakeSocket, '')
+    const { timer, server } = await arm({ socketPath: fakeSocket })
+    await timer.runIdleTimerOnce('idle-1')
+    server.close()
+    const activity = await import('../features/activity-log.js')
+    const events = await activity.readActivity()
+    expect(events.some((e) => e.message?.startsWith('idle bank NOT sent:'))).toBe(true)
+    expect(notifications.some((n) => n.title === 'Idle bank failed')).toBe(true)
   })
 
   it('records the request, so an unanswered one does not re-fire at every stop', async () => {

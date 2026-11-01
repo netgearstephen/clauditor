@@ -1,4 +1,5 @@
 import { readConfig } from '../config.js'
+import { notifyDesktop } from '../notify.js'
 import { logActivity } from '../features/activity-log.js'
 import {
   awaitingToolResult,
@@ -21,6 +22,7 @@ import {
 import {
   deleteTimerFile,
   readInboxAuth,
+  inboxAuthFailure,
   readTimerFile,
   sendToInbox,
   shouldIdleBank,
@@ -162,6 +164,20 @@ export async function runIdleTimerOnce(
           rewritePath: readSessionBank(sessionId)?.handoffPath ?? '',
         })
       ))
+    if (auth === null) {
+      const why = inboxAuthFailure(file.socketPath)
+      await logActivity({
+        type: 'context_warning',
+        session,
+        message: `idle bank NOT sent: ${why}`,
+      })
+      if (readConfig().notifications.desktop) {
+        await notifyDesktop(
+          'Idle bank failed',
+          `Session ${session} cache will go cold with no handoff: ${why}`
+        )
+      }
+    }
     await logActivity({
       type: 'context_warning',
       session,

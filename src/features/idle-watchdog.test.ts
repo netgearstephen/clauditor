@@ -6,6 +6,7 @@ import {
   shouldIdleBank,
   isProcessAlive,
   readInboxAuth,
+  inboxAuthFailure,
   IDLE_BANK_DELAY_MS,
   SEND_TIMEOUT_MS,
   type IdleBankFacts,
@@ -476,6 +477,26 @@ describe('readInboxAuth', () => {
     const dir = publish(sockPath)
 
     expect(readInboxAuth(sockPath, dir, () => 'claude')?.mode).toBe('prompting')
+  })
+
+  it('finds the key under CLAUDE_CONFIG_DIR when no sessions dir is passed', () => {
+    const sockPath = join(tempDir, '4242.sock')
+    publish(sockPath)
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = tempDir
+    try {
+      expect(readInboxAuth(sockPath, undefined, () => 'claude')?.peerToken).toBe('peer-secret')
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+    }
+  })
+
+  it('says why in the reason when no key file exists', () => {
+    const sockPath = join(tempDir, '4242.sock')
+    const r = inboxAuthFailure(sockPath, join(tempDir, 'sessions'))
+    expect(r).toContain(join(tempDir, 'sessions'))
+    expect(r).toContain('no key file')
   })
 
   it('returns null when the session has gone and taken its key file with it', () => {
