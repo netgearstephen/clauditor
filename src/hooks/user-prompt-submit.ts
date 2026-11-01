@@ -1,5 +1,11 @@
 import { readStdin, isHookEntry } from './shared.js'
-import { allowWorkAfterBank } from '../features/journal.js'
+import {
+  allowWorkAfterBank,
+  wakeExpiresAt,
+  WAKE_ARRIVAL_MARGIN_MS,
+  WAKE_EXPIRED,
+} from '../features/journal.js'
+import { logActivity } from '../features/activity-log.js'
 
 /**
  * UserPromptSubmit hook — fires before Claude processes the user's prompt.
@@ -31,11 +37,28 @@ import { allowWorkAfterBank } from '../features/journal.js'
  * triggered by quoting, relaying or discussing a phrase. It never refuses a
  * prompt, never injects context, and never delays anything: it sets a flag and
  * gets out of the way.
+ *
+ * The one prompt it does refuse is not the user's. A bank request clauditor
+ * queued to this session's inbox can sit there for hours, and once its cache
+ * has expired, reading it costs a full write of the whole context. Here is the
+ * only place that can stop that before a model turn: this hook fires for an
+ * inbox message exactly as for a typed one, and a block ends it with no
+ * request sent.
  */
 export async function handleUserPromptSubmitHook(): Promise<void> {
   const raw = await readStdin().catch(() => '')
   try {
     const input = JSON.parse(raw) as { session_id?: string; prompt?: string }
+    const expiresAt = input.prompt ? wakeExpiresAt(input.prompt) : null
+    if (expiresAt !== null && Date.now() >= expiresAt - WAKE_ARRIVAL_MARGIN_MS) {
+      await logActivity({
+        type: 'context_warning',
+        session: (input.session_id ?? '').slice(0, 8),
+        message: `expired wake refused, ${Math.max(0, Math.round((Date.now() - expiresAt) / 60_000))} min late`,
+      }).catch(() => {})
+      process.stdout.write(JSON.stringify({ decision: 'block', reason: WAKE_EXPIRED }))
+      return
+    }
     // Any prompt at all. The user typing again IS the decision to carry on,
     // and a phrase they had to know was only ever a trap for the person who
     // did not know it. It also handed a blocked agent the incantation, which
