@@ -1227,9 +1227,12 @@ export function bankInstruction(
     `step, each with a line range and one clause on why. The mechanical candidate list ` +
     `ranks by read count, which is not the same thing.\n\n` +
     `Under ## Verify with, give one shell command whose output proves the state the ` +
-    `Status snapshot records, and the output it should show. It need not be a test: ` +
-    `\`ls\`, \`grep -c\` or \`wc -c\` on the files the work produced is enough. A successor ` +
-    `runs it first and stops if it disagrees, so a handoff without one cannot be checked.\n\n` +
+    `Status snapshot records, and the output it shows. It need not be a test: ` +
+    `\`ls\`, \`grep -c\` or \`wc -c\` on the files the work produced is enough. Run it ` +
+    `with Bash before writing the file (a read-only command is allowed despite the wind-down) ` +
+    `and paste its actual output as Expected. Never write an output you have not just seen: ` +
+    `a predicted count is wrong often enough that a successor stops on a sound handoff. A ` +
+    `successor runs it first and stops if it disagrees, so a handoff without one cannot be checked.\n\n` +
     `Status snapshot is one line per finished item, citing the path that holds the detail.\n\n` +
     `Omit any section with no real content rather than stubbing it, except Stephen answered, not yet logged, and Verify with. Do NOT write a ` +
     `header block, Files touched, Required reading, or Verification command: those are ` +

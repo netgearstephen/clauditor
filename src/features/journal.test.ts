@@ -1407,6 +1407,9 @@ describe('journal', () => {
       expect(text).toContain('## Low confidence')
       expect(text).toMatch(/## Status snapshot\n## Read first\n## Verify with\n/)
       expect(text).toMatch(/## Open questions and blockers\n## Stephen answered, not yet logged\n/)
+      // A predicted Expected stops a successor on a sound handoff.
+      expect(text).toMatch(/Run it\s+with Bash before writing the file/)
+      expect(text).toContain('Never write an output you have not just seen')
       // Asking for these would produce a second, staler copy of the facts.
       expect(text).not.toContain('## Files touched')
       expect(text).not.toContain('## Verification command')
