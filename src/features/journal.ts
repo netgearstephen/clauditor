@@ -907,6 +907,8 @@ export function handoffStamp(now: Date = new Date()): string {
 const JUDGEMENT_SECTIONS = [
   'Mission',
   'Status snapshot',
+  'Read first',
+  'Verify with',
   'Key decisions and why',
   'Dead ends',
   'Gotchas and constraints',
@@ -1136,7 +1138,15 @@ export function bankInstruction(
     `That is the one thing a later session cannot recover: their work lands after this ` +
     `document is written. Record them and leave them running; do not stop them, and do ` +
     `not wait for them before writing.\n\n` +
-    `Omit any section with no real content rather than stubbing it, except Stephen answered, not yet logged. Do NOT write a ` +
+    `Under ## Read first, name at most five files the successor must read before the next ` +
+    `step, each with a line range and one clause on why. The mechanical candidate list ` +
+    `ranks by read count, which is not the same thing.\n\n` +
+    `Under ## Verify with, give one shell command whose output proves the state the ` +
+    `Status snapshot records, and the output it should show. It need not be a test: ` +
+    `\`ls\`, \`grep -c\` or \`wc -c\` on the files the work produced is enough. A successor ` +
+    `runs it first and stops if it disagrees, so a handoff without one cannot be checked.\n\n` +
+    `Status snapshot is one line per finished item, citing the path that holds the detail.\n\n` +
+    `Omit any section with no real content rather than stubbing it, except Stephen answered, not yet logged, and Verify with. Do NOT write a ` +
     `header block, Files touched, Required reading, or Verification command: those are ` +
     `derived mechanically at read time and anything you write there would be a second, ` +
     `staler copy.\n\n` +
@@ -1148,7 +1158,7 @@ export function bankInstruction(
     `Rules: declarative for state, imperative only for The very next step and Do not touch. ` +
     `Write "X is not yet implemented", never "implement X". Quote the user's own rationale ` +
     `where you can. British English, no em dashes. Absolute paths only.\n\n` +
-    `Keep it under 12,000 bytes. Cut anything a Read of a cited path would tell the reader; ` +
+    `Keep it under 8,000 bytes. Cut anything a Read of a cited path would tell the reader; ` +
     `cite the path instead. Never cut open questions, dead ends with their reason, gotchas, ` +
     `do-not-touch, or low confidence: those are what cannot be reconstructed.\n\n` +
     `End your reply with the marker ${BANK_MARKER} on its own line, then stop. The marker ` +
