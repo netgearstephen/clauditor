@@ -428,6 +428,7 @@ async function checkSessionHealth(sessionId: string): Promise<HookDecision | nul
         context: liveContext,
         gate,
         growth: config.rotation.reBankGrowth,
+        lead: config.rotation.nudgeLead ?? 0,
         nudgedAt: readNudgedAt(sessionId),
         bankedPeak: readSessionBank(sessionId)?.peakContext ?? 0,
       }

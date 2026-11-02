@@ -14,18 +14,21 @@ export function shouldNudgeRotation({
   context,
   gate,
   growth,
+  lead = 0,
   nudgedAt,
   bankedPeak,
 }: {
   context: number
   gate: number
   growth: number
+  /** Tokens below the gate at which the first nudge fires. */
+  lead?: number
   /** Context at this session's last nudge, 0 if none. */
   nudgedAt: number
   /** Context at this session's last bank, 0 if none. */
   bankedPeak: number
 }): boolean {
-  if (context < gate) return false
+  if (context < gate - lead) return false
   if (bankedPeak > 0 && context < bankedPeak + growth) return false
   if (nudgedAt > 0 && context < nudgedAt + growth) return false
   return true
@@ -46,7 +49,7 @@ export function recordNudge(sessionId: string, context: number): void {
 export function rotationNudgeMessage(context: number, gate: number): string {
   return (
     `[clauditor — ROTATION DUE]: This session's context is ${Math.round(context / 1000)}k tokens, ` +
-    `past the ${Math.round(gate / 1000)}k rotation trigger. A handoff can only be banked when your turn ends. ` +
+    `${context >= gate ? 'past' : 'close to'} the ${Math.round(gate / 1000)}k rotation trigger. A handoff can only be banked when your turn ends. ` +
     `Finish the step you are on (leave files compiling and tests in a known state), do not start the next ` +
     `sub-task, and end your turn with a short status for the user: what is done and what comes next. ` +
     `Clauditor will then bank a handoff so a fresh session can continue.`
