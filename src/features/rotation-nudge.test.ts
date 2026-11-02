@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldNudgeRotation } from './rotation-nudge.js'
+import { shouldNudgeRotation, rotationNudgeMessage } from './rotation-nudge.js'
 
 const gate = 130_000
 const growth = 50_000
@@ -16,6 +16,16 @@ describe('shouldNudgeRotation', () => {
   it('does not repeat until the session has grown materially since the last nudge', () => {
     expect(shouldNudgeRotation({ context: 170_000, gate, growth, nudgedAt: 131_000, bankedPeak: 0 })).toBe(false)
     expect(shouldNudgeRotation({ context: 181_000, gate, growth, nudgedAt: 131_000, bankedPeak: 0 })).toBe(true)
+  })
+
+  it('fires the first nudge a lead below the gate, so the wrap-up lands near it', () => {
+    expect(shouldNudgeRotation({ context: 114_999, gate, growth, lead: 15_000, nudgedAt: 0, bankedPeak: 0 })).toBe(false)
+    expect(shouldNudgeRotation({ context: 115_000, gate, growth, lead: 15_000, nudgedAt: 0, bankedPeak: 0 })).toBe(true)
+  })
+
+  it('says close to the trigger below it and past it above', () => {
+    expect(rotationNudgeMessage(116_000, gate)).toContain('close to the 130k')
+    expect(rotationNudgeMessage(131_000, gate)).toContain('past the 130k')
   })
 
   it('leaves a session that has already banked alone until it outgrows that bank', () => {

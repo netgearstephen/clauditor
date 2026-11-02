@@ -124,6 +124,12 @@ export interface ClauditorUserConfig {
      */
     reBankGrowth: number
     /**
+     * How far below the gate the mid-turn nudge fires. A nudged turn still
+     * finishes the step it is on, so a nudge at the gate itself banked at a
+     * median 145k against a 130k gate; firing early lets the turn end near it.
+     */
+    nudgeLead: number
+    /**
      * After a session banks, refuse the tool calls that would make the banked
      * handoff stale. Agents already running are unaffected; Bash and reads
      * stay open so the handoff itself can still be updated.
@@ -154,6 +160,7 @@ const DEFAULTS: ClauditorUserConfig = {
       perModel: {},
     },
     reBankGrowth: 50_000,
+    nudgeLead: 15_000,
     blockAfterBank: true,
   },
   pricing: {
