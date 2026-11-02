@@ -60,8 +60,38 @@ export async function runHookSafely(
 /**
  * Write hook decision to stdout.
  */
-export function outputDecision(decision: HookDecision): void {
-  process.stdout.write(JSON.stringify(decision))
+export type ContextEvent = 'PreToolUse' | 'PostToolUse' | 'SessionStart' | 'UserPromptSubmit'
+
+/**
+ * Claude Code reads additionalContext only inside hookSpecificOutput. At the
+ * top level it is recorded in the transcript but never reaches the model.
+ * Only the parts `deliver` accepts are nested: most of clauditor's warnings
+ * (compression notes, generic error advice, loose repeat-failure matches) were
+ * measured as noise, and delivering them would cost context on every call.
+ */
+export function toHookOutput(
+  decision: HookDecision,
+  event?: ContextEvent,
+  deliver: (part: string) => boolean = () => true
+): Record<string, unknown> {
+  const { additionalContext, ...rest } = decision
+  if (!additionalContext) return rest
+  if (!event) return decision as Record<string, unknown>
+  const parts = additionalContext.split('\n\n')
+  const seen = parts.filter(deliver)
+  const unseen = parts.filter((p) => !deliver(p))
+  const out: Record<string, unknown> = { ...rest }
+  if (unseen.length) out.additionalContext = unseen.join('\n\n')
+  if (seen.length) out.hookSpecificOutput = { hookEventName: event, additionalContext: seen.join('\n\n') }
+  return out
+}
+
+export function outputDecision(
+  decision: HookDecision,
+  event?: ContextEvent,
+  deliver?: (part: string) => boolean
+): void {
+  process.stdout.write(JSON.stringify(toHookOutput(decision, event, deliver)))
 }
 
 /**

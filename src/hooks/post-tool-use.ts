@@ -56,8 +56,10 @@ export async function handlePostToolUseHook(): Promise<void> {
     return
   }
 
-  outputDecision(decision)
+  outputDecision(decision, 'PostToolUse', isRotationPart)
 }
+
+const isRotationPart = (part: string) => part.startsWith('[clauditor — ROTATION DUE]')
 
 async function processToolResult(input: PostToolUseHookInput): Promise<HookDecision> {
   const parts: string[] = []
