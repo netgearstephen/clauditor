@@ -325,6 +325,19 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheReadPerMillion: 0.3,
     windowTokens: 1_000_000,
   },
+  // Base-tier rates. A request whose prompt (cache reads and writes included)
+  // passes 100k tokens pays 5x on every rate, which this table cannot express,
+  // so a session past 100k is understated fivefold. A per-model peakContext
+  // below 100k keeps Haiku sessions in the base tier and the figures true.
+  'claude-haiku-5': {
+    model: 'claude-haiku-5',
+    inputPerMillion: 0.1,
+    outputPerMillion: 0.5,
+    cacheCreationPerMillion: 0.125,
+    cacheCreation1hPerMillion: 0.2,
+    cacheReadPerMillion: 0.01,
+    windowTokens: 1_000_000,
+  },
   'claude-haiku-4-5': {
     model: 'claude-haiku-4-5',
     inputPerMillion: 1.0,

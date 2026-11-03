@@ -234,6 +234,16 @@ describe('context windows', () => {
     expect(getPricingForModel('claude-fable-5-1').windowTokens).toBe(1_000_000)
     expect(getPricingForModel('claude-sonnet-4-6').windowTokens).toBe(1_000_000)
     expect(getPricingForModel('claude-haiku-4-5').windowTokens).toBe(200_000)
+    expect(getPricingForModel('claude-haiku-5-5').windowTokens).toBe(1_000_000)
+  })
+
+  it('prices Haiku 5.5 on its own key, not as an unknown model', () => {
+    // claude-haiku-4-5 is not a prefix of claude-haiku-5-5, so without its own
+    // key a Haiku 5.5 session fell through to the unknown-model path.
+    const pricing = getPricingForModel('claude-haiku-5-5')
+    expect(pricing.model).toBe('claude-haiku-5')
+    expect(pricing.inputPerMillion).toBe(0.1)
+    expect(pricing.cacheReadPerMillion).toBe(0.01)
   })
 
   it('leaves the window unset rather than guessing it', () => {

@@ -44,6 +44,14 @@ describe('resolveTrigger', () => {
     expect(t.gate).toBe(150_000)
   })
 
+  it('applies a claude-haiku-5 override to a claude-haiku-5-5 session', () => {
+    const t = resolveTrigger(
+      'claude-haiku-5-5',
+      config({ perModel: { 'claude-haiku-5': { peakContext: 80_000 } } })
+    )
+    expect(t.gate).toBe(80_000)
+  })
+
   it('keys the override by the same longest-prefix rule as pricing', () => {
     const t = resolveTrigger(
       'claude-opus-5[1m]',
