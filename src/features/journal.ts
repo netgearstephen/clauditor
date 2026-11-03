@@ -12,6 +12,7 @@ import {
 import { homedir } from 'node:os'
 import { resolve, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import type { TurnMetrics, TokenUsage } from '../types.js'
 import { contextTokens } from './cost-tracker.js'
 
@@ -36,8 +37,23 @@ const CLAUDITOR_DIR = resolve(homedir(), '.clauditor')
 const JOURNALS_DIR = resolve(CLAUDITOR_DIR, 'journals')
 const HANDOFFS_DIR = resolve(homedir(), '.claude', 'handoffs')
 
-/** The shared mechanical extractor, owned by the /handoff skill. */
-const FACTS_SCRIPT = resolve(
+/**
+ * Walks up rather than using a fixed `..`: the bundle splits this module into
+ * a shared chunk under dist/, while vitest runs it from src/features/.
+ */
+function bundledFactsScript(): string | null {
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (;;) {
+    const candidate = resolve(dir, 'scripts', 'handoff-facts.py')
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+/** Installs that predate the bundled copy still have the /handoff skill's one. */
+const LEGACY_FACTS_SCRIPT = resolve(
   homedir(),
   '.claude',
   'skills',
@@ -45,6 +61,21 @@ const FACTS_SCRIPT = resolve(
   'scripts',
   'handoff-facts.py'
 )
+
+/** First of the given paths that exists, or null. */
+export function pickFactsScript(candidates: (string | null | undefined)[]): string | null {
+  for (const c of candidates) if (c && existsSync(c)) return c
+  return null
+}
+
+/** CLAUDITOR_FACTS_SCRIPT wins, then the copy shipped with clauditor, then the skill's. */
+export function factsScriptPath(): string | null {
+  return pickFactsScript([
+    process.env.CLAUDITOR_FACTS_SCRIPT,
+    bundledFactsScript(),
+    LEGACY_FACTS_SCRIPT,
+  ])
+}
 
 /**
  * Prompt cache TTL. Sessions here run on the 1-hour cache: measured across 400
@@ -771,17 +802,18 @@ export function readTurns(transcriptPath: string): {
 /**
  * Run the shared facts script.
  *
- * This is the same script the /handoff skill calls in its Step 1. Calling it
- * rather than reimplementing it is the whole reason the two modes cannot
- * disagree about what a file touched is.
+ * The /handoff skill's Step 1 runs the same extractor. Calling it rather than
+ * reimplementing it is the whole reason the two modes cannot disagree about
+ * what a file touched is.
  */
 export function runFactsScript(
   sessionId: string | null,
   cwd: string | null
 ): string | null {
-  if (!existsSync(FACTS_SCRIPT)) return null
+  const script = factsScriptPath()
+  if (!script) return null
   try {
-    const args = [FACTS_SCRIPT]
+    const args = [script]
     if (sessionId) args.push('--session-id', sessionId)
     return execFileSync('python3', args, {
       cwd: cwd || undefined,
