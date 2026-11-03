@@ -21,6 +21,8 @@ export interface AssistantRecord extends BaseRecord {
   type: 'assistant'
   message: {
     role: 'assistant'
+    /** One API response. Claude Code writes one record per content block, each repeating the response's usage. */
+    id?: string
     model: string
     content: ContentBlock[]
     usage?: TokenUsage
@@ -111,6 +113,12 @@ export interface TurnMetrics {
   usage: TokenUsage
   cacheRatio: number
   toolCalls: ToolCallSummary[]
+  /**
+   * The API response this record belongs to. A turn is one transcript record,
+   * not one request: every record of a response repeats its usage, so pricing
+   * goes one usage per messageId. Absent on records that carry no id.
+   */
+  messageId?: string
 }
 
 export interface ToolCallSummary {
@@ -177,6 +185,14 @@ export interface PricingConfig {
    * window would be worse than not clamping at all.
    */
   windowTokens?: number
+  /**
+   * A request whose prompt (input plus cache writes plus cache reads) passes
+   * this many tokens pays every rate, output included, times
+   * longContextMultiplier. Per request, so it can only be applied to one
+   * request's usage, never to a summed session total.
+   */
+  longContextThreshold?: number
+  longContextMultiplier?: number
 }
 
 export interface AlertConfig {
@@ -325,10 +341,8 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheReadPerMillion: 0.3,
     windowTokens: 1_000_000,
   },
-  // Base-tier rates. A request whose prompt (cache reads and writes included)
-  // passes 100k tokens pays 5x on every rate, which this table cannot express,
-  // so a session past 100k is understated fivefold. A per-model peakContext
-  // below 100k keeps Haiku sessions in the base tier and the figures true.
+  // Base-tier rates. A request whose prompt, cache reads and writes included,
+  // passes 100k tokens pays 5x on every rate.
   'claude-haiku-5': {
     model: 'claude-haiku-5',
     inputPerMillion: 0.1,
@@ -337,6 +351,8 @@ export const MODEL_PRICING: Record<string, PricingConfig> = {
     cacheCreation1hPerMillion: 0.2,
     cacheReadPerMillion: 0.01,
     windowTokens: 1_000_000,
+    longContextThreshold: 100_000,
+    longContextMultiplier: 5,
   },
   'claude-haiku-4-5': {
     model: 'claude-haiku-4-5',

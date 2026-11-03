@@ -257,6 +257,7 @@ The fork corrects several pricing holes that made upstream's figures unreliable:
 - Each session is priced with its own model, then summed. Costing the aggregate once repriced every session as whatever the fallback was.
 - Non-Anthropic models (Ollama, Claude Code's `<synthetic>` marker) cost zero. Unrecognised `claude-*` IDs still take the loud most-expensive fallback.
 - Current model IDs and rates are in the table; stale ones are corrected.
+- A session is priced request by request, then summed. Claude Code writes one transcript record per content block and repeats the response's usage on each, so each response's usage is counted once, by message id. Pricing per request is also what lets a long-context tier apply: Claude Haiku 5.5 bills every rate at 5x on a request whose prompt (input, cache writes and cache reads) passes 100k tokens, which a summed session total cannot show.
 
 On a two-day sample the reported spend went from $217.81 to $425.86 after these fixes.
 

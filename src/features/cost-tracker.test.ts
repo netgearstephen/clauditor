@@ -1,13 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import {
   estimateCost,
+  estimateSessionCost,
+  requestUsages,
   getPricingForModel,
   contextTokens,
   pricingKeyForModel,
   resetPricingCache,
 } from './cost-tracker.js'
 import { MODEL_PRICING } from '../types.js'
-import type { TokenUsage } from '../types.js'
+import type { TokenUsage, TurnMetrics, PricingConfig } from '../types.js'
 import { rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
@@ -380,5 +382,135 @@ describe('an empty config', () => {
     const viaConfig = estimateCost(usage, getPricingForModel('claude-opus-5'))
     const viaTable = estimateCost(usage, MODEL_PRICING['claude-opus-5'])
     expect(viaConfig).toEqual(viaTable)
+  })
+})
+
+function usage(
+  prompt: { input?: number; write?: number; read?: number },
+  output = 0
+): TokenUsage {
+  return {
+    input_tokens: prompt.input ?? 0,
+    output_tokens: output,
+    cache_creation_input_tokens: prompt.write ?? 0,
+    cache_read_input_tokens: prompt.read ?? 0,
+  }
+}
+
+function turn(u: TokenUsage, messageId?: string): TurnMetrics {
+  return { turnIndex: 0, timestamp: '', usage: u, cacheRatio: 0, toolCalls: [], messageId }
+}
+
+describe('the long-context tier', () => {
+  const haiku = MODEL_PRICING['claude-haiku-5']
+  const { longContextThreshold: _t, longContextMultiplier: _m, ...untiered } = haiku
+  const flat: PricingConfig = untiered
+
+  it('is set on Haiku 5.5 and nowhere it has not been verified', () => {
+    expect(haiku.longContextThreshold).toBe(100_000)
+    expect(haiku.longContextMultiplier).toBe(5)
+    for (const [key, p] of Object.entries(MODEL_PRICING)) {
+      if (key === 'claude-haiku-5') continue
+      expect(p.longContextThreshold, key).toBeUndefined()
+    }
+  })
+
+  it('keeps base rates at exactly the threshold', () => {
+    const u = usage({ input: 10_000, write: 40_000, read: 50_000 }, 2_000)
+    // 0.01M x $0.1 + 0.04M x $0.2 (1h write) + 0.05M x $0.01 + 0.002M x $0.5
+    expect(estimateCost(u, haiku).totalCost).toBeCloseTo(0.0105, 12)
+    expect(estimateCost(u, haiku)).toEqual(estimateCost(u, flat))
+  })
+
+  it('keeps base rates below the threshold', () => {
+    const u = usage({ read: 99_999 }, 5_000)
+    expect(estimateCost(u, haiku)).toEqual(estimateCost(u, flat))
+  })
+
+  it('scales every rate, output included, one token past the threshold', () => {
+    const u = usage({ input: 10_000, write: 40_000, read: 50_001 }, 2_000)
+    const tiered = estimateCost(u, haiku)
+    const base = estimateCost(u, flat)
+    expect(tiered.inputCost).toBeCloseTo(base.inputCost * 5, 12)
+    expect(tiered.outputCost).toBeCloseTo(base.outputCost * 5, 12)
+    expect(tiered.cacheCreationCost).toBeCloseTo(base.cacheCreationCost * 5, 12)
+    expect(tiered.cacheReadCost).toBeCloseTo(base.cacheReadCost * 5, 12)
+    expect(tiered.totalCost).toBeCloseTo(0.05250005, 12)
+  })
+
+  it('scales the uncached comparison too, so the saving is the tier\'s saving', () => {
+    const u = usage({ input: 1_000, read: 150_000 }, 1_000)
+    expect(estimateCost(u, haiku).savedVsUncached).toBeCloseTo(
+      estimateCost(u, flat).savedVsUncached * 5,
+      12
+    )
+  })
+
+  it('composes with a configured discount', () => {
+    writeUserConfig({ pricing: { perModel: { 'claude-haiku-5': { discount: 0.2 } } } })
+    resetPricingCache()
+    const discounted = getPricingForModel('claude-haiku-5-5')
+    expect(discounted.longContextThreshold).toBe(100_000)
+    expect(discounted.longContextMultiplier).toBe(5)
+    const below = usage({ read: 80_000 }, 1_000)
+    const above = usage({ read: 120_000 }, 1_000)
+    expect(estimateCost(below, discounted).totalCost).toBeCloseTo(
+      estimateCost(below, flat).totalCost * 0.8,
+      12
+    )
+    expect(estimateCost(above, discounted).totalCost).toBeCloseTo(
+      estimateCost(above, flat).totalCost * 5 * 0.8,
+      12
+    )
+  })
+})
+
+describe('estimateSessionCost', () => {
+  const haiku = MODEL_PRICING['claude-haiku-5']
+
+  it('prices a Haiku session request by request, not on its summed prompt', () => {
+    const small = usage({ read: 60_000 }, 1_000)
+    const large = usage({ read: 140_000 }, 1_000)
+    const session = { turns: [turn(small, 'a'), turn(large, 'b'), turn(small, 'c')] }
+    // 0.06M x $0.01 + 0.001M x $0.5 for each small request; the large one is
+    // (0.14M x $0.01 + 0.001M x $0.5) x 5.
+    const expected = 2 * (0.0006 + 0.0005) + 5 * (0.0014 + 0.0005)
+    expect(estimateSessionCost(session, haiku).totalCost).toBeCloseTo(expected, 12)
+    // The summed prompt is 260k, which would put all three in the tier.
+    const total = usage({ read: 260_000 }, 3_000)
+    expect(estimateCost(total, haiku).totalCost).toBeCloseTo(5 * (0.0026 + 0.0015), 12)
+  })
+
+  it('keeps two sub-threshold requests at base rates though their sum passes it', () => {
+    const half = usage({ read: 70_000 })
+    const session = { turns: [turn(half, 'a'), turn(half, 'b')] }
+    expect(estimateSessionCost(session, haiku).totalCost).toBeCloseTo(0.0014, 12)
+  })
+
+  it('prices a response written as several records once', () => {
+    // Claude Code writes one record per content block, each with the
+    // response's full usage.
+    const u = usage({ read: 50_000 }, 2_000)
+    const session = { turns: [turn(u, 'm1'), turn(u, 'm1'), turn(u, 'm1'), turn(u)] }
+    expect(requestUsages(session.turns)).toHaveLength(2)
+    expect(estimateSessionCost(session, haiku).totalCost).toBeCloseTo(
+      2 * estimateCost(u, haiku).totalCost,
+      12
+    )
+  })
+
+  it('clamps the saving on the session, not per request', () => {
+    // A cold 1h write saves less than nothing (2x input against 1x); the
+    // reads it pays for later save. Clamping each request would drop the
+    // write's loss and keep the reads' gain.
+    const write = usage({ write: 100_000 })
+    const read = usage({ read: 50_000 })
+    const session = { turns: [turn(write, 'w'), turn(read, 'r')] }
+    expect(estimateCost(read, haiku).savedVsUncached).toBeGreaterThan(0)
+    expect(estimateSessionCost(session, haiku).savedVsUncached).toBe(0)
+  })
+
+  it('is zero for a session with no turns', () => {
+    expect(estimateSessionCost({ turns: [] }, haiku).totalCost).toBe(0)
   })
 })
