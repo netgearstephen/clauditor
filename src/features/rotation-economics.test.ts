@@ -25,6 +25,19 @@ describe('rotationBreakEvenRequests', () => {
     expect(rotationBreakEvenRequests(HANDOFF_ENTRY_TOKENS, 'claude-opus-5')).toBeNull()
   })
 
+  it('charges a context past the long-context tier at the tier rate', () => {
+    // Bank: (0.15M read x $0.01 + 0.003M out x $0.5) x 5 = $0.015. Entry, at
+    // base rates: 50,362 1h writes x $0.2/M. Saving: 0.15M x $0.01 x 5 less
+    // the new session's 50,362-token read at base.
+    const bank = 0.015
+    const entry = (HANDOFF_ENTRY_TOKENS / 1_000_000) * 0.2
+    const saving = 0.0075 - (HANDOFF_ENTRY_TOKENS / 1_000_000) * 0.01
+    expect(rotationBreakEvenRequests(150_000, 'claude-haiku-5-5')).toBeCloseTo(
+      (bank + entry) / saving,
+      10
+    )
+  })
+
   it('cannot price a missing or unbilled model', () => {
     expect(rotationBreakEvenRequests(150_000, null)).toBeNull()
     expect(rotationBreakEvenRequests(150_000, 'llama-local')).toBeNull()

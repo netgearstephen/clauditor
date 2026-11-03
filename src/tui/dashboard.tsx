@@ -1,7 +1,7 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import type { SessionState } from '../types.js'
-import { estimateCost, getPricingForModel } from '../features/cost-tracker.js'
+import { estimateSessionCost, getPricingForModel } from '../features/cost-tracker.js'
 import { peakContextTokens } from '../features/journal.js'
 import { resolveTrigger } from '../features/trigger.js'
 
@@ -11,7 +11,7 @@ interface DashboardProps {
 
 export function Dashboard({ session }: DashboardProps) {
   const pricing = session.model ? getPricingForModel(session.model) : undefined
-  const cost = estimateCost(session.totalUsage, pricing)
+  const cost = estimateSessionCost(session, pricing)
   const modelShort = session.model?.replace('claude-', '').split('-2')[0] || 'unknown'
 
   // Peak context against the banking gate. Peak rather than current, because

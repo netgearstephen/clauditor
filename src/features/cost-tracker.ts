@@ -1,4 +1,4 @@
-import type { TokenUsage, PricingConfig, TurnMetrics } from '../types.js'
+import type { TokenUsage, PricingConfig, SessionState, TurnMetrics } from '../types.js'
 import { MODEL_PRICING, FALLBACK_PRICING_MODEL, ZERO_PRICING } from '../types.js'
 import { readConfig, type PricingUserConfig } from '../config.js'
 
@@ -11,19 +11,55 @@ export interface CostEstimate {
   savedVsUncached: number
 }
 
+const ZERO_COST: CostEstimate = {
+  inputCost: 0,
+  outputCost: 0,
+  cacheCreationCost: 0,
+  cacheReadCost: 0,
+  totalCost: 0,
+  savedVsUncached: 0,
+}
+
 /**
- * Estimate the cost of a token usage record.
+ * Rate multiplier for one request: the long-context tier's, or 1.
+ *
+ * Only meaningful for a single request's usage. On a summed total the prompt
+ * is every request's prompt added together, which passes the threshold long
+ * before any one request does.
+ */
+function tierMultiplier(usage: TokenUsage, p: PricingConfig): number {
+  if (p.longContextThreshold === undefined || p.longContextMultiplier === undefined) {
+    return 1
+  }
+  return contextTokens(usage) > p.longContextThreshold ? p.longContextMultiplier : 1
+}
+
+/**
+ * Estimate the cost of one API request's usage.
+ *
+ * Pass a single request, never a session total: a model with a long-context
+ * tier is priced on the request's own prompt size. Use estimateSessionCost
+ * for a session.
  */
 export function estimateCost(
   usage: TokenUsage,
   pricing?: PricingConfig
 ): CostEstimate {
+  const cost = priceRequest(usage, pricing)
+  return { ...cost, savedVsUncached: Math.max(0, cost.savedVsUncached) }
+}
+
+/** estimateCost with savedVsUncached unclamped: a cache write alone saves less than nothing. */
+function priceRequest(usage: TokenUsage, pricing?: PricingConfig): CostEstimate {
   // getPricingForModel rather than the table, so a caller with no model in
   // hand still gets the configured discount rather than list price.
   const p = pricing ?? getPricingForModel(FALLBACK_PRICING_MODEL)
+  // Applied on top of the discounted rates. Both scale every rate, so the
+  // order does not matter.
+  const tier = tierMultiplier(usage, p)
 
-  const inputCost = (usage.input_tokens / 1_000_000) * p.inputPerMillion
-  const outputCost = (usage.output_tokens / 1_000_000) * p.outputPerMillion
+  const inputCost = (usage.input_tokens / 1_000_000) * p.inputPerMillion * tier
+  const outputCost = (usage.output_tokens / 1_000_000) * p.outputPerMillion * tier
   // Cache writes are billed by TTL: 1.25x base for 5m, 2x for 1h.
   // The breakdown is a hint, never the total: an unpopulated one would price
   // every write at zero, so the remainder is billed at the 1h rate.
@@ -34,20 +70,18 @@ export function estimateCost(
     usage.cache_creation_input_tokens - write5m - write1h
   )
   const cacheCreationCost =
-    (write5m / 1_000_000) * p.cacheCreationPerMillion +
-    ((write1h + unattributed) / 1_000_000) * p.cacheCreation1hPerMillion
+    ((write5m / 1_000_000) * p.cacheCreationPerMillion +
+      ((write1h + unattributed) / 1_000_000) * p.cacheCreation1hPerMillion) *
+    tier
   const cacheReadCost =
-    (usage.cache_read_input_tokens / 1_000_000) * p.cacheReadPerMillion
+    (usage.cache_read_input_tokens / 1_000_000) * p.cacheReadPerMillion * tier
 
   const totalCost = inputCost + outputCost + cacheCreationCost + cacheReadCost
 
-  // What it would have cost if all cache tokens were regular input
+  // What it would have cost if all cache tokens were regular input. The same
+  // prompt, so the same tier.
   const uncachedInputCost =
-    ((usage.input_tokens +
-      usage.cache_creation_input_tokens +
-      usage.cache_read_input_tokens) /
-      1_000_000) *
-    p.inputPerMillion
+    (contextTokens(usage) / 1_000_000) * p.inputPerMillion * tier
   const uncachedTotal = uncachedInputCost + outputCost
   const savedVsUncached = uncachedTotal - totalCost
 
@@ -57,8 +91,59 @@ export function estimateCost(
     cacheCreationCost,
     cacheReadCost,
     totalCost,
-    savedVsUncached: Math.max(0, savedVsUncached),
+    savedVsUncached,
   }
+}
+
+export function sumCosts(costs: CostEstimate[]): CostEstimate {
+  return costs.reduce(
+    (acc, c) => ({
+      inputCost: acc.inputCost + c.inputCost,
+      outputCost: acc.outputCost + c.outputCost,
+      cacheCreationCost: acc.cacheCreationCost + c.cacheCreationCost,
+      cacheReadCost: acc.cacheReadCost + c.cacheReadCost,
+      totalCost: acc.totalCost + c.totalCost,
+      savedVsUncached: acc.savedVsUncached + c.savedVsUncached,
+    }),
+    ZERO_COST
+  )
+}
+
+/**
+ * One usage per API request in a session's turns.
+ *
+ * Claude Code writes a transcript record per content block (thinking, text,
+ * tool_use), and every record of one response repeats that response's full
+ * usage, so summing turns counts a request two or three times. The last
+ * record of each messageId is kept; a turn with no id is its own request.
+ */
+export function requestUsages(turns: TurnMetrics[]): TokenUsage[] {
+  const byMessage = new Map<string, TokenUsage>()
+  const anonymous: TokenUsage[] = []
+  for (const turn of turns) {
+    if (turn.messageId) byMessage.set(turn.messageId, turn.usage)
+    else anonymous.push(turn.usage)
+  }
+  return [...byMessage.values(), ...anonymous]
+}
+
+/**
+ * A session's cost, priced request by request and summed.
+ *
+ * Never estimateCost(session.totalUsage): a long-context tier is decided per
+ * request, and the summed prompt would put every request of a long session
+ * into it.
+ *
+ * The saving is clamped once, on the session's sum: clamping per request
+ * would drop the cost of each cache write while keeping every read it pays
+ * for, and overstate the saving.
+ */
+export function estimateSessionCost(
+  session: Pick<SessionState, 'turns'>,
+  pricing?: PricingConfig
+): CostEstimate {
+  const cost = sumCosts(requestUsages(session.turns).map((u) => priceRequest(u, pricing)))
+  return { ...cost, savedVsUncached: Math.max(0, cost.savedVsUncached) }
 }
 
 /** Model IDs that matched nothing, so we warn once per ID rather than per turn. */

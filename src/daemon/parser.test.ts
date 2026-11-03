@@ -104,6 +104,15 @@ describe('extractTurns', () => {
     }
   }
 
+  it('carries the response id, so repeated records of one request can be priced once', () => {
+    const a = makeAssistant(0, { input: 100, output: 50, cacheCreate: 200, cacheRead: 0 })
+    const b = makeAssistant(1, { input: 100, output: 50, cacheCreate: 200, cacheRead: 0 })
+    a.message.id = 'msg_1'
+    b.message.id = 'msg_1'
+    const turns = extractTurns([a, b, makeAssistant(2, { input: 1, output: 1, cacheCreate: 0, cacheRead: 0 })])
+    expect(turns.map((t) => t.messageId)).toEqual(['msg_1', 'msg_1', undefined])
+  })
+
   it('extracts turns from assistant records', () => {
     const records: SessionRecord[] = [
       makeAssistant(0, { input: 100, output: 50, cacheCreate: 200, cacheRead: 0 }),

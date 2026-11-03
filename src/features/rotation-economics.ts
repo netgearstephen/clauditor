@@ -35,7 +35,9 @@ function cost(usage: Partial<TokenUsage>, model: string): number {
  *
  * Spend: one warm bank turn (re-read the context, write the handoff) plus the
  * new session's cold entry write. Saving: every later request re-reads
- * peakContext - HANDOFF_ENTRY_TOKENS fewer tokens.
+ * HANDOFF_ENTRY_TOKENS instead of peakContext. Priced as two requests, not
+ * as one read of the token difference: a long-context tier prices the larger
+ * read at its own rate.
  */
 export function rotationBreakEvenRequests(
   peakContext: number,
@@ -45,10 +47,9 @@ export function rotationBreakEvenRequests(
   const bank =
     cost({ cache_read_input_tokens: peakContext, output_tokens: BANK_OUTPUT_TOKENS }, model)
   const entry = cost({ cache_creation_input_tokens: HANDOFF_ENTRY_TOKENS }, model)
-  const savingPerRequest = cost(
-    { cache_read_input_tokens: peakContext - HANDOFF_ENTRY_TOKENS },
-    model
-  )
+  const savingPerRequest =
+    cost({ cache_read_input_tokens: peakContext }, model) -
+    cost({ cache_read_input_tokens: HANDOFF_ENTRY_TOKENS }, model)
   // Zero rates (a local model) or a context no bigger than a fresh session's.
   if (!(savingPerRequest > 0)) return null
   return (bank + entry) / savingPerRequest

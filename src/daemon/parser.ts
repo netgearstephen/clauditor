@@ -101,6 +101,7 @@ export function extractTurns(records: SessionRecord[]): TurnMetrics[] {
       usage,
       cacheRatio,
       toolCalls,
+      messageId: assistant.message.id,
     })
   }
 

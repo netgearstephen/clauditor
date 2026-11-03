@@ -69,7 +69,7 @@ program
     const config = await loadConfig()
     const { SessionStore } = await import('./daemon/store.js')
     const { SessionWatcher } = await import('./daemon/watcher.js')
-    const { estimateCost, getPricingForModel } = await import('./features/cost-tracker.js')
+    const { estimateSessionCost, getPricingForModel } = await import('./features/cost-tracker.js')
 
     const store = new SessionStore()
     const watcher = new SessionWatcher(store, {
@@ -101,7 +101,7 @@ program
     const contextLimit = isOpus ? 1_000_000 : 200_000
     const contextPct = Math.round((contextSize / contextLimit) * 100)
     const pricing = s.model ? getPricingForModel(s.model) : undefined
-    const cost = estimateCost(s.totalUsage, pricing)
+    const cost = estimateSessionCost(s, pricing)
 
     if (options.json) {
       console.log(JSON.stringify({
@@ -793,7 +793,7 @@ program
     const config = await loadConfig()
     const { SessionStore } = await import('./daemon/store.js')
     const { SessionWatcher } = await import('./daemon/watcher.js')
-    const { estimateCost, getPricingForModel } = await import('./features/cost-tracker.js')
+    const { estimateSessionCost, getPricingForModel, sumCosts } = await import('./features/cost-tracker.js')
 
     const store = new SessionStore()
     const watcher = new SessionWatcher(store, {
@@ -861,32 +861,13 @@ program
 
     // Price each session with its own model, then sum. Costing the aggregate
     // with a single default silently repriced every session as whatever the
-    // fallback happened to be.
-    const cost = recentSessions
-      .map((s) =>
-        estimateCost(
-          s.totalUsage,
-          s.model ? getPricingForModel(s.model) : undefined
-        )
+    // fallback happened to be, and a summed prompt would land every request
+    // in a long-context tier.
+    const cost = sumCosts(
+      recentSessions.map((s) =>
+        estimateSessionCost(s, s.model ? getPricingForModel(s.model) : undefined)
       )
-      .reduce(
-        (acc, c) => ({
-          inputCost: acc.inputCost + c.inputCost,
-          outputCost: acc.outputCost + c.outputCost,
-          cacheCreationCost: acc.cacheCreationCost + c.cacheCreationCost,
-          cacheReadCost: acc.cacheReadCost + c.cacheReadCost,
-          totalCost: acc.totalCost + c.totalCost,
-          savedVsUncached: acc.savedVsUncached + c.savedVsUncached,
-        }),
-        {
-          inputCost: 0,
-          outputCost: 0,
-          cacheCreationCost: 0,
-          cacheReadCost: 0,
-          totalCost: 0,
-          savedVsUncached: 0,
-        }
-      )
+    )
 
     const cacheRatio =
       totalUsage.cache_read_input_tokens /
@@ -911,7 +892,7 @@ program
         return {
           label: s.label,
           model: s.model?.replace('claude-', '').split('-2')[0] || '',
-          cost: estimateCost(s.totalUsage, pricing).totalCost,
+          cost: estimateSessionCost(s, pricing).totalCost,
           turns: s.turns.length,
           cacheStatus: s.cacheHealth.status,
         }
@@ -994,7 +975,6 @@ program
     const config = await loadConfig()
     const { SessionStore } = await import('./daemon/store.js')
     const { SessionWatcher } = await import('./daemon/watcher.js')
-    const { estimateCost, getPricingForModel } = await import('./features/cost-tracker.js')
 
     const store = new SessionStore()
     const watcher = new SessionWatcher(store, {
@@ -1375,7 +1355,7 @@ program
     const config = await loadConfig()
     const { SessionStore } = await import('./daemon/store.js')
     const { SessionWatcher } = await import('./daemon/watcher.js')
-    const { estimateCost, getPricingForModel } = await import('./features/cost-tracker.js')
+    const { estimateSessionCost, getPricingForModel } = await import('./features/cost-tracker.js')
 
     const store = new SessionStore()
     const watcher = new SessionWatcher(store, {
@@ -1403,7 +1383,7 @@ program
     if (options.json) {
       console.log(JSON.stringify(sessions.map((s) => {
         const pricing = s.model ? getPricingForModel(s.model) : undefined
-        const cost = estimateCost(s.totalUsage, pricing)
+        const cost = estimateSessionCost(s, pricing)
         const lastTurn = s.turns[s.turns.length - 1]
 
         // Find token spike turns
@@ -1436,7 +1416,7 @@ program
 
     for (const s of sessions) {
       const pricing = s.model ? getPricingForModel(s.model) : undefined
-      const cost = estimateCost(s.totalUsage, pricing)
+      const cost = estimateSessionCost(s, pricing)
       const modelShort = s.model?.replace('claude-', '').split('-2')[0] || '?'
       const lastTurn = s.turns[s.turns.length - 1]
 
