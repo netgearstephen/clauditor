@@ -52,14 +52,13 @@ function writeUserHandoff(
 /**
  * A stand-in facts script that reports only the session id it was handed.
  *
- * The real one is owned by the /handoff skill and reads a transcript; what
- * matters here is which id assembly passes it.
+ * The real one reads a transcript; what matters here is which id assembly
+ * passes it.
  */
 function fakeFactsScript(home: string): void {
-  const dir = join(home, '.claude', 'skills', 'handoff', 'scripts')
-  mkdirSync(dir, { recursive: true })
+  const path = join(home, 'fake-handoff-facts.py')
   writeFileSync(
-    join(dir, 'handoff-facts.py'),
+    path,
     [
       'import sys',
       'sid = sys.argv[sys.argv.index("--session-id") + 1] if "--session-id" in sys.argv else "none"',
@@ -67,6 +66,7 @@ function fakeFactsScript(home: string): void {
       '',
     ].join('\n')
   )
+  process.env.CLAUDITOR_FACTS_SCRIPT = path
 }
 
 /** Turns whose context sizes are exactly as given. */
@@ -93,9 +93,42 @@ describe('journal', () => {
   })
 
   afterEach(() => {
+    delete process.env.CLAUDITOR_FACTS_SCRIPT
     vi.doUnmock('node:os')
     vi.resetModules()
     rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  describe('factsScriptPath', () => {
+    it('resolves to the copy shipped in the package scripts directory', async () => {
+      const { factsScriptPath } = await importFresh(tempDir)
+      expect(factsScriptPath()).toBe(join(__dirname, '..', '..', 'scripts', 'handoff-facts.py'))
+    })
+
+    it('prefers CLAUDITOR_FACTS_SCRIPT when it exists', async () => {
+      fakeFactsScript(tempDir)
+      const { factsScriptPath } = await importFresh(tempDir)
+      expect(factsScriptPath()).toBe(join(tempDir, 'fake-handoff-facts.py'))
+    })
+
+    it('skips a CLAUDITOR_FACTS_SCRIPT that does not exist', async () => {
+      process.env.CLAUDITOR_FACTS_SCRIPT = join(tempDir, 'missing.py')
+      const { factsScriptPath } = await importFresh(tempDir)
+      expect(factsScriptPath()).toBe(join(__dirname, '..', '..', 'scripts', 'handoff-facts.py'))
+    })
+
+    it('falls through missing candidates to the first that exists', async () => {
+      const legacy = join(tempDir, 'legacy.py')
+      writeFileSync(legacy, '')
+      const { pickFactsScript } = await importFresh(tempDir)
+      expect(pickFactsScript([undefined, null, join(tempDir, 'nope.py'), legacy])).toBe(legacy)
+      expect(pickFactsScript([join(tempDir, 'nope.py')])).toBeNull()
+    })
+
+    it('runs the shipped script end to end', async () => {
+      const { runFactsScript } = await importFresh(tempDir)
+      expect(runFactsScript('00000000-0000-0000-0000-000000000000', process.cwd())).toContain('**Repo**')
+    })
   })
 
   describe('awaitingToolResult', () => {
