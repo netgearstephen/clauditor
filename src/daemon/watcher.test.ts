@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionWatcher } from './watcher.js'
@@ -160,4 +160,42 @@ describe('SessionWatcher per-file state', () => {
       await watcher.stop()
     }
   })
+
+  async function following(run: (w: Internals, store: SessionStore) => Promise<void>) {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      await run(watcher as unknown as Internals, store)
+    } finally {
+      await watcher.stop()
+    }
+  }
+
+  it('re-parses a file rewritten in place to a larger size', () =>
+    following(async (w, store) => {
+      // One turn with records long enough that the old end offset falls mid-line.
+      writeFileSync(file, transcript('s'.repeat(400), 1))
+      await w.processFileIncremental(file)
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0])
+    }))
+
+  it('re-parses a file replaced by a rename even when the old end lands on a line break', () =>
+    following(async (w, store) => {
+      const tmp = `${file}.tmp`
+      writeFileSync(tmp, (transcript('s1', 2) + transcript('s1', 1)).replaceAll('2026-01', '2026-02'))
+      renameSync(tmp, file)
+      await w.processFileIncremental(file)
+      expect(store.getAll()[0].turns.map((t) => t.timestamp.slice(0, 7))).toEqual(Array(3).fill('2026-02'))
+    }))
+
+  it('keeps the incremental state when a store listener throws', () =>
+    following(async (w, store) => {
+      const full = vi.spyOn(w, 'processFile')
+      store.onUpdate(() => { throw new Error('listener bug') })
+      appendFileSync(file, transcript('s1', 1))
+      await w.processFileIncremental(file)
+      expect(full).not.toHaveBeenCalled()
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0, 1, 2])
+    }))
 })

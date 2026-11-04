@@ -1,7 +1,7 @@
 import { watch, type FSWatcher } from 'chokidar'
 import { resolve, basename, sep } from 'node:path'
 import { homedir } from 'node:os'
-import { readdir, stat } from 'node:fs/promises'
+import { open, readdir, stat } from 'node:fs/promises'
 import { readJsonlRecords, TranscriptAccumulator } from './parser.js'
 import { SessionStore } from './store.js'
 
@@ -21,6 +21,7 @@ export class SessionWatcher {
   // Only filled once start() is watching: a one-shot scan of every transcript
   // must not keep per-file state, or its memory grows with the whole history.
   private fileOffsets = new Map<string, number>()
+  private fileInodes = new Map<string, number>()
   private fileState = new Map<string, TranscriptAccumulator>()
   private following = false
   // The accumulators are mutated in place, so two reads of one file must not overlap.
@@ -79,6 +80,7 @@ export class SessionWatcher {
     await Promise.allSettled(this.queues.values())
     this.fileState.clear()
     this.fileOffsets.clear()
+    this.fileInodes.clear()
   }
 
   getStore(): SessionStore {
@@ -167,7 +169,7 @@ export class SessionWatcher {
    */
   private async processFile(filePath: string): Promise<void> {
     try {
-      const { size } = await stat(filePath)
+      const { size, ino } = await stat(filePath)
       const accumulator = new TranscriptAccumulator()
       if (size > 0) {
         for await (const record of readJsonlRecords(filePath, { end: size - 1 })) accumulator.add(record)
@@ -176,6 +178,7 @@ export class SessionWatcher {
       if (this.following) {
         this.fileState.set(filePath, accumulator)
         this.fileOffsets.set(filePath, size)
+        this.fileInodes.set(filePath, ino)
       }
 
       this.updateStore(filePath, accumulator)
@@ -199,8 +202,13 @@ export class SessionWatcher {
     try {
       const fileStat = await stat(filePath)
 
-      if (fileStat.size <= lastOffset) {
-        // Truncated, or rewritten in place: polling only reports a change when mtime moves.
+      // Anything but a whole-line append is a rewrite: no growth (polling reports
+      // a change only when mtime moves), a new inode, or no line break at the old end.
+      if (
+        fileStat.size <= lastOffset ||
+        fileStat.ino !== this.fileInodes.get(filePath) ||
+        !(await endsLineAt(filePath, lastOffset))
+      ) {
         return this.processFile(filePath)
       }
 
@@ -208,14 +216,15 @@ export class SessionWatcher {
         accumulator.add(record)
       }
       this.fileOffsets.set(filePath, fileStat.size)
-
-      this.updateStore(filePath, accumulator)
     } catch {
       // The accumulator may hold part of the failed read, so start again from nothing.
       this.fileState.delete(filePath)
       this.fileOffsets.delete(filePath)
+      this.fileInodes.delete(filePath)
       return this.processFile(filePath)
     }
+    // A throwing store listener is not a failed read, so it must not reset the state.
+    try { this.updateStore(filePath, accumulator) } catch {}
   }
 
   private updateStore(filePath: string, transcript: TranscriptAccumulator): void {
@@ -234,6 +243,17 @@ export class SessionWatcher {
         transcript.isResumed(),
       )
     }
+  }
+}
+
+async function endsLineAt(filePath: string, offset: number): Promise<boolean> {
+  if (offset === 0) return true
+  const file = await open(filePath, 'r')
+  try {
+    const { buffer } = await file.read(Buffer.alloc(1), 0, 1, offset - 1)
+    return buffer[0] === 0x0a
+  } finally {
+    await file.close()
   }
 }
 
