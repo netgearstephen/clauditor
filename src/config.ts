@@ -258,21 +258,28 @@ export function setProjectHubConfig(gitRemoteUrl: string, hubConfig: ProjectHubC
   // Seeded first, or a login before install would leave a file the seed never fills.
   writeConfigIfMissing()
   // The raw file, not readConfig(): merging first would freeze every default into it.
-  let raw: unknown = {}
-  try {
-    raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
-  } catch {
-    if (existsSync(CONFIG_FILE)) {
-      // Set aside, not overwritten or refused, so neither the hand edits nor this login is lost.
-      const aside = `${CONFIG_FILE}.invalid-${Date.now()}`
-      renameSync(CONFIG_FILE, aside)
-      console.warn(`${CONFIG_FILE} was not valid JSON, so it was moved to ${aside}.`)
-      if (writeConfigIfMissing()) raw = structuredClone(SEED_CONFIG)
-    }
+  let raw = readRawConfig()
+  if (!isObject(raw)) {
+    // Set aside, not overwritten or refused, so neither the hand edits nor this login is lost.
+    const aside = `${CONFIG_FILE}.invalid-${Date.now()}`
+    renameSync(CONFIG_FILE, aside)
+    console.warn(`${CONFIG_FILE} did not hold a JSON object, so it was moved to ${aside}.`)
+    raw = writeConfigIfMissing() ? structuredClone(SEED_CONFIG) : {}
   }
-  const config: Partial<ClauditorUserConfig> = isObject(raw) ? raw : {}
+  const config = raw as Partial<ClauditorUserConfig>
   config.projects = { ...(isObject(config.projects) ? config.projects : {}), [gitRemoteUrl]: hubConfig }
   writeConfig(config)
+}
+
+/** The parsed file, `{}` when absent, or undefined when it is not JSON; other read errors throw. */
+function readRawConfig(): unknown {
+  try {
+    return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    if (err instanceof SyntaxError) return undefined
+    throw err
+  }
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

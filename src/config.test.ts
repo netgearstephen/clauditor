@@ -78,7 +78,10 @@ describe('readConfig', () => {
 })
 
 describe('writeConfigIfMissing', () => {
-  afterEach(() => rmSync(CONFIG_FILE, { force: true }))
+  afterEach(() => {
+    rmSync(CONFIG_FILE, { force: true })
+    vi.restoreAllMocks()
+  })
 
   it('seeds a config that readConfig resolves to the tuned rotation', () => {
     expect(writeConfigIfMissing()).toBe(true)
@@ -124,10 +127,24 @@ describe('writeConfigIfMissing', () => {
 
   const hub = { apiKey: 'k', url: 'u', developerHash: 'd' }
 
-  it('saves a hub project over a file holding non-object JSON', () => {
+  it('sets non-object JSON aside like unparseable JSON', () => {
     write(null)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     setProjectHubConfig('github.com/a/b', hub)
-    expect(Object.keys(JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')))).toEqual(['projects'])
+    expect(Object.keys(JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))).sort()).toEqual(['projects', 'rotation'])
+    const aside = readdirSync(CONFIG_DIR).filter((f) => f.startsWith('config.json.invalid-'))
+    expect(aside).toHaveLength(1)
+    rmSync(join(CONFIG_DIR, aside[0]))
+  })
+
+  it('throws on a read error instead of setting the file aside', () => {
+    mkdirSync(CONFIG_FILE, { recursive: true })
+    try {
+      expect(() => setProjectHubConfig('github.com/a/b', hub)).toThrow(/EISDIR/)
+      expect(readdirSync(CONFIG_DIR)).toEqual(['config.json'])
+    } finally {
+      rmSync(CONFIG_FILE, { recursive: true, force: true })
+    }
   })
 
   it('replaces a non-object projects value rather than spreading it', () => {

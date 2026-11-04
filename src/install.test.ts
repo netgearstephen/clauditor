@@ -97,6 +97,15 @@ describe('installHooks', () => {
     expect(commands('PreToolUse')).toEqual(['other-tool check', 'clauditor hook pre-tool-use'])
   })
 
+  it('names per-model gates net of the buffer, as the top-level gate is', async () => {
+    mkdirSync(join(homedir(), '.clauditor'), { recursive: true })
+    writeFileSync(join(homedir(), '.clauditor', 'config.json'), JSON.stringify({
+      rotation: { trigger: { peakContext: 130_000, buffer: 10_000, perModel: { 'claude-haiku-5': { peakContext: 70_000 } } } },
+    }))
+    const messages = await installHooks(claudeDir)
+    expect(messages.join('\n')).toContain('peak context reaches 120k (claude-haiku-5 60k).')
+  })
+
   it('skips a malformed per-model entry in the handoff message', async () => {
     mkdirSync(join(homedir(), '.clauditor'), { recursive: true })
     writeFileSync(join(homedir(), '.clauditor', 'config.json'),
