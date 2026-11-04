@@ -97,11 +97,9 @@ describe('installHooks', () => {
     expect(commands('PreToolUse')).toEqual(['other-tool check', 'clauditor hook pre-tool-use'])
   })
 
-  it('names the peak gate in the handoff message', async () => {
-    // Install has no model, so the gate named is the top-level one from the
-    // config install seeds, not a per-model override or a window clamp.
+  it('names the top-level and per-model gates in the handoff message', async () => {
     const messages = await installHooks(claudeDir)
-    expect(messages.join('\n')).toContain('peak context reaches 130k')
+    expect(messages.join('\n')).toContain('peak context reaches 130k (claude-haiku-5 70k).')
     expect(messages.join('\n')).toContain('edits that would make it stale are refused')
   })
 })

@@ -138,15 +138,18 @@ export async function installHooks(claudeDir?: string): Promise<string[]> {
   const { writeConfigIfMissing, readConfig } = await import('./config.js')
   writeConfigIfMissing()
 
-  // No model yet at install time, so this reports the configured top-level
-  // gate; a per-model override or window clamp only shows up
-  // once a session picks a model, which the dashboard resolves against instead.
+  // No model yet at install time, so per-model gates are listed as configured;
+  // a window clamp only shows once a session picks a model.
   const { resolveTrigger } = await import('./features/trigger.js')
   const config = readConfig()
   const gate = resolveTrigger(null, config).gate
+  const perModel = Object.entries(config.rotation.trigger.perModel)
+    .filter(([, o]) => o.peakContext !== undefined)
+    .map(([model, o]) => `${model} ${(o.peakContext! / 1000).toFixed(0)}k`)
   messages.push(
     `Session handoffs: ✓ enabled, banks one warm handoff per session once ` +
-    `peak context reaches ${(gate / 1000).toFixed(0)}k. ` +
+    `peak context reaches ${(gate / 1000).toFixed(0)}k` +
+    (perModel.length ? ` (${perModel.join(', ')})` : '') + '. ' +
     (config.rotation.blockAfterBank
       ? 'After a bank, edits that would make it stale are refused.'
       : 'Never blocks.')

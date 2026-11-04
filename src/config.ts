@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -255,16 +255,14 @@ export function getProjectHubConfig(gitRemoteUrl: string): ProjectHubConfig | nu
  * Save hub config for a specific project.
  */
 export function setProjectHubConfig(gitRemoteUrl: string, hubConfig: ProjectHubConfig): void {
-  const config = readConfig()
-  if (!config.projects) config.projects = {}
-  config.projects[gitRemoteUrl] = hubConfig
-  writeConfig(config)
+  // The raw file, not readConfig(): merging first would freeze every default into it.
+  let raw: Partial<ClauditorUserConfig> = {}
+  try { raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) } catch {}
+  raw.projects = { ...raw.projects, [gitRemoteUrl]: hubConfig }
+  writeConfig(raw)
 }
 
-/**
- * Write the full config to disk.
- */
-export function writeConfig(config: ClauditorUserConfig): void {
+export function writeConfig(config: Partial<ClauditorUserConfig>): void {
   mkdirSync(CONFIG_DIR, { recursive: true })
   writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n')
 }
@@ -291,11 +289,17 @@ export const SEED_CONFIG: { rotation: Partial<Omit<Rotation, 'trigger'>> & { tri
 export function writeConfigIfMissing(file: string = CONFIG_FILE): boolean {
   if (existsSync(file)) return false
   mkdirSync(dirname(file), { recursive: true })
+  // Written aside and hard-linked in, so an interrupted write never leaves a
+  // truncated file that the exists check would then keep forever.
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(SEED_CONFIG, null, 2) + '\n')
   try {
-    writeFileSync(file, JSON.stringify(SEED_CONFIG, null, 2) + '\n', { flag: 'wx' })
+    linkSync(tmp, file)
     return true
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
     throw err
+  } finally {
+    rmSync(tmp, { force: true })
   }
 }

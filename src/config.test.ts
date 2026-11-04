@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs'
+import { rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync, readdirSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { readConfig, writeConfigIfMissing } from './config.js'
+import { readConfig, writeConfigIfMissing, setProjectHubConfig } from './config.js'
 
 // The sandbox home that vitest.setup.ts installed before any test module was
 // imported, which is also the home config.ts resolved its path against.
@@ -105,8 +105,19 @@ describe('writeConfigIfMissing', () => {
       const file = join(dir, 'nested', 'config.json')
       expect(writeConfigIfMissing(file)).toBe(true)
       expect(JSON.parse(readFileSync(file, 'utf-8')).rotation.nudgeLead).toBe(25_000)
+      expect(readdirSync(join(dir, 'nested'))).toEqual(['config.json'])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('stays lean after a hub project is saved into it', () => {
+    writeConfigIfMissing()
+    const hub = { apiKey: 'k', url: 'https://hub.example', developerHash: 'd' }
+    setProjectHubConfig('github.com/a/b', hub)
+    const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
+    expect(Object.keys(raw).sort()).toEqual(['projects', 'rotation'])
+    expect(raw.rotation.trigger).toEqual({ peakContext: 130_000, perModel: { 'claude-haiku-5': { peakContext: 70_000 } } })
+    expect(raw.projects['github.com/a/b']).toEqual(hub)
   })
 })
