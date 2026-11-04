@@ -54,7 +54,7 @@ describe('streamed transcript reads', () => {
 
   it('joins a record that spans several stream chunks', async () => {
     // Over the 1 MiB read chunk, in two-byte characters, so a chunk ends mid-record and mid-character.
-    const big = '\u00e9'.repeat(800_000)
+    const big = 'a' + '\u00e9'.repeat(800_000)
     const lines = [assistant(1), JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: big } }), assistant(2)]
     writeFileSync(file, lines.join('\n'))
     const records = await parseJsonlFile(file)

@@ -168,9 +168,9 @@ export class SessionWatcher {
    * Full parse, streamed: used for the initial scan and for new files.
    */
   private async processFile(filePath: string): Promise<void> {
+    const accumulator = new TranscriptAccumulator()
     try {
       const { size, ino } = await stat(filePath)
-      const accumulator = new TranscriptAccumulator()
       if (size > 0) {
         for await (const record of readJsonlRecords(filePath, { end: size - 1 })) accumulator.add(record)
       }
@@ -180,14 +180,14 @@ export class SessionWatcher {
         this.fileOffsets.set(filePath, size)
         this.fileInodes.set(filePath, ino)
       }
-
-      this.updateStore(filePath, accumulator)
     } catch {
       // Ignore corrupt or in-progress files, but never append to the old file's state.
       this.fileState.delete(filePath)
       this.fileOffsets.delete(filePath)
       this.fileInodes.delete(filePath)
+      return
     }
+    this.notify(filePath, accumulator)
   }
 
   /**
@@ -226,8 +226,12 @@ export class SessionWatcher {
       this.fileInodes.delete(filePath)
       return this.processFile(filePath)
     }
-    // A throwing store listener is not a failed read, so it must not reset the state.
-    try { this.updateStore(filePath, accumulator) } catch {}
+    this.notify(filePath, accumulator)
+  }
+
+  /** A throwing store listener is not a failed read, so it must not reset the read state. */
+  private notify(filePath: string, transcript: TranscriptAccumulator): void {
+    try { this.updateStore(filePath, transcript) } catch {}
   }
 
   private updateStore(filePath: string, transcript: TranscriptAccumulator): void {

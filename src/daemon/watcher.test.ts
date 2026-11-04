@@ -211,4 +211,12 @@ describe('SessionWatcher per-file state', () => {
       expect(full).not.toHaveBeenCalled()
       expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0, 1, 2])
     }))
+
+  it('keeps the state of a full parse when a store listener throws', () =>
+    following(async (w, store) => {
+      const state = (w as unknown as { fileState: Map<string, unknown> }).fileState
+      store.onUpdate(() => { throw new Error('listener bug') })
+      await w.processFile(file)
+      expect(state.has(file)).toBe(true)
+    }))
 })
