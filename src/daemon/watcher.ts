@@ -183,7 +183,10 @@ export class SessionWatcher {
 
       this.updateStore(filePath, accumulator)
     } catch {
-      // Ignore corrupt or in-progress files
+      // Ignore corrupt or in-progress files, but never append to the old file's state.
+      this.fileState.delete(filePath)
+      this.fileOffsets.delete(filePath)
+      this.fileInodes.delete(filePath)
     }
   }
 

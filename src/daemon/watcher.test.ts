@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync, renameSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync, renameSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionWatcher } from './watcher.js'
@@ -187,6 +187,19 @@ describe('SessionWatcher per-file state', () => {
       renameSync(tmp, file)
       await w.processFileIncremental(file)
       expect(store.getAll()[0].turns.map((t) => t.timestamp.slice(0, 7))).toEqual(Array(3).fill('2026-02'))
+    }))
+
+  it('forgets the old state when the full re-parse after a rewrite fails', () =>
+    following(async (w) => {
+      const state = (w as unknown as { fileState: Map<string, unknown> }).fileState
+      writeFileSync(file, transcript('s1', 1))
+      chmodSync(file, 0o000)
+      try {
+        await w.processFileIncremental(file)
+      } finally {
+        chmodSync(file, 0o644)
+      }
+      expect(state.has(file)).toBe(false)
     }))
 
   it('keeps the incremental state when a store listener throws', () =>
