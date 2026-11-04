@@ -58,7 +58,7 @@ export async function* readJsonlRecords(
   // Not readline: it also breaks lines at U+2028 and U+2029, which JSON
   // leaves unescaped inside strings, so it would split real records apart.
   let pending: string[] = []
-  for await (const chunk of createReadStream(filePath, { encoding: 'utf-8', ...range })) {
+  for await (const chunk of createReadStream(filePath, { encoding: 'utf-8', highWaterMark: 1 << 20, ...range })) {
     const text = chunk as string
     let from = 0
     for (let nl = text.indexOf('\n'); nl !== -1; nl = text.indexOf('\n', from)) {

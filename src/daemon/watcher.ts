@@ -23,6 +23,8 @@ export class SessionWatcher {
   private fileOffsets = new Map<string, number>()
   private fileState = new Map<string, TranscriptAccumulator>()
   private following = false
+  // The accumulators are mutated in place, so two reads of one file must not overlap.
+  private queues = new Map<string, Promise<void>>()
 
   constructor(store: SessionStore, options: WatcherOptions = {}) {
     this.store = store
@@ -51,11 +53,21 @@ export class SessionWatcher {
     })
 
     this.watcher.on('add', (filePath) => {
-      if (filePath.endsWith('.jsonl')) this.processFile(filePath)
+      if (filePath.endsWith('.jsonl')) this.enqueue(filePath, () => this.processFile(filePath))
     })
     this.watcher.on('change', (filePath) => {
-      if (filePath.endsWith('.jsonl')) this.processFileIncremental(filePath)
+      if (filePath.endsWith('.jsonl')) this.enqueue(filePath, () => this.processFileIncremental(filePath))
     })
+  }
+
+  private enqueue(filePath: string, task: () => Promise<void>): Promise<void> {
+    const next = (this.queues.get(filePath) ?? Promise.resolve()).then(task, task)
+    this.queues.set(filePath, next)
+    const done = () => {
+      if (this.queues.get(filePath) === next) this.queues.delete(filePath)
+    }
+    next.then(done, done)
+    return next
   }
 
   async stop(): Promise<void> {
@@ -63,6 +75,10 @@ export class SessionWatcher {
       await this.watcher.close()
       this.watcher = null
     }
+    this.following = false
+    await Promise.allSettled(this.queues.values())
+    this.fileState.clear()
+    this.fileOffsets.clear()
   }
 
   getStore(): SessionStore {
@@ -83,9 +99,10 @@ export class SessionWatcher {
 
   /**
    * Parse only the newest transcripts, bounded by count and total bytes.
-   * scanAll parses every transcript ever written, which is
-   * fine for an on-demand command but froze the machine when every pane of
-   * a herdr restore ran it from the SessionStart hook at once.
+   * scanAll parses every transcript ever written and the default store keeps
+   * every session, which is fine for an on-demand command but froze the
+   * machine when every pane of a herdr restore ran it from the SessionStart
+   * hook at once.
    */
   async scanRecent({ maxFiles, maxBytes = Infinity }: { maxFiles: number; maxBytes?: number }): Promise<void> {
     const dir = this.projectPath
@@ -183,7 +200,7 @@ export class SessionWatcher {
       const fileStat = await stat(filePath)
 
       if (fileStat.size <= lastOffset) {
-        // File was truncated or unchanged — full re-parse
+        // Truncated, or rewritten in place: polling only reports a change when mtime moves.
         return this.processFile(filePath)
       }
 
@@ -194,7 +211,9 @@ export class SessionWatcher {
 
       this.updateStore(filePath, accumulator)
     } catch {
-      // Incremental failed — fall back to full parse
+      // The accumulator may hold part of the failed read, so start again from nothing.
+      this.fileState.delete(filePath)
+      this.fileOffsets.delete(filePath)
       return this.processFile(filePath)
     }
   }

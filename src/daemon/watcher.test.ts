@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -110,6 +110,52 @@ describe('SessionWatcher per-file state', () => {
       await (watcher as unknown as { processFileIncremental(p: string): Promise<void> }).processFileIncremental(file)
       const turns = store.getAll()[0].turns
       expect(turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4])
+    } finally {
+      await watcher.stop()
+    }
+  })
+
+  type Internals = {
+    enqueue(p: string, task: () => Promise<void>): Promise<void>
+    processFile(p: string): Promise<void>
+    processFileIncremental(p: string): Promise<void>
+  }
+
+  it('reads each appended record once when change events overlap', async () => {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      appendFileSync(file, transcript('s1', 3))
+      const w = watcher as unknown as Internals
+      const change = () => w.enqueue(file, () => w.processFileIncremental(file))
+      await Promise.all([change(), change()])
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4])
+    } finally {
+      await watcher.stop()
+    }
+  })
+
+  it('drops a half-fed accumulator when an incremental read fails', async () => {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      const w = watcher as unknown as Internals & { fileState: Map<string, { add(r: unknown): void }> }
+      const acc = w.fileState.get(file)!
+      appendFileSync(file, transcript('s1', 3))
+      const add = acc.add.bind(acc)
+      let seen = 0
+      vi.spyOn(acc, 'add').mockImplementation((r) => {
+        add(r)
+        if (++seen === 2) throw new Error('read failed')
+      })
+      // The full re-parse fallback fails too, and swallows its error as it does on a vanished file.
+      vi.spyOn(w, 'processFile').mockResolvedValueOnce(undefined)
+      await w.processFileIncremental(file)
+      appendFileSync(file, transcript('s1', 1))
+      await w.processFileIncremental(file)
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4, 5])
     } finally {
       await watcher.stop()
     }
