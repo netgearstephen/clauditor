@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
 import type {
   SessionRecord,
   UserRecord,
@@ -48,21 +48,156 @@ export function parseJsonlLine(line: string): SessionRecord | null {
 }
 
 /**
+ * Yield a JSONL file's records one line at a time. `start` and `end` are
+ * inclusive byte offsets, as for createReadStream.
+ */
+export async function* readJsonlRecords(
+  filePath: string,
+  range: { start?: number; end?: number } = {},
+): AsyncGenerator<SessionRecord> {
+  // Not readline: it also breaks lines at U+2028 and U+2029, which JSON
+  // leaves unescaped inside strings, so it would split real records apart.
+  let pending: string[] = []
+  for await (const chunk of createReadStream(filePath, { encoding: 'utf-8', highWaterMark: 1 << 20, ...range })) {
+    const text = chunk as string
+    let from = 0
+    for (let nl = text.indexOf('\n'); nl !== -1; nl = text.indexOf('\n', from)) {
+      pending.push(text.slice(from, nl))
+      const record = parseJsonlLine(pending.join(''))
+      pending = []
+      if (record) yield record
+      from = nl + 1
+    }
+    if (from < text.length) pending.push(text.slice(from))
+  }
+  const last = parseJsonlLine(pending.join(''))
+  if (last) yield last
+}
+
+/**
  * Parse an entire JSONL file into an array of records.
  */
 export async function parseJsonlFile(filePath: string): Promise<SessionRecord[]> {
-  const content = await readFile(filePath, 'utf-8')
-  const lines = content.split('\n')
   const records: SessionRecord[] = []
+  for await (const record of readJsonlRecords(filePath)) records.push(record)
+  return records
+}
 
-  for (const line of lines) {
-    const record = parseJsonlLine(line)
-    if (record) {
-      records.push(record)
+/**
+ * Builds a transcript's turns, model, context and resume flag one record at a
+ * time, keeping hashes rather than records. Readers can be called again after
+ * more records are added, which is how the watcher follows an appended file.
+ */
+export class TranscriptAccumulator {
+  private turns: TurnMetrics[] = []
+  private toolUses: { key: string; id: string }[] = []
+  private resultHashes = new Map<string, string | null>()
+  private model: string | null = null
+  private cwd: string | null = null
+  private gitBranch: string | null = null
+  private firstUserMessage: string | null = null
+  private resumed = false
+
+  add(record: SessionRecord): void {
+    if (record.type === 'compact_boundary' || record.type === 'summary') this.resumed = true
+    if (record.type === 'assistant') this.addAssistant(record as AssistantRecord)
+    else if (record.type === 'user') this.addUser(record as UserRecord)
+    // Top-level tool_result is the spec's form; real transcripts embed results in user messages.
+    else if (record.type === 'tool_result' && 'toolUseId' in record) {
+      const tr = record as { toolUseId: string; content: unknown }
+      this.resultHashes.set(tr.toolUseId, tr.content ? hashValue(tr.content) : null)
     }
   }
 
-  return records
+  getTurns(): TurnMetrics[] {
+    // A call takes the result of the last same-named, same-input tool_use with
+    // a result, which need not be its own block.
+    const outputByKey = new Map<string, string>()
+    for (const use of this.toolUses) {
+      const hash = this.resultHashes.get(use.id)
+      if (hash) outputByKey.set(use.key, hash)
+    }
+    return this.turns.map((turn) => ({
+      ...turn,
+      toolCalls: turn.toolCalls.map((call) => ({
+        ...call,
+        outputHash: outputByKey.get(toolKey(call.name, call.inputHash)) ?? '',
+      })),
+    }))
+  }
+
+  getModel(): string | null {
+    return this.model
+  }
+
+  getContext(): SessionContext {
+    return {
+      cwd: this.cwd,
+      gitBranch: this.gitBranch,
+      projectName: projectNameOf(this.cwd),
+      firstUserMessage: this.firstUserMessage,
+    }
+  }
+
+  isResumed(): boolean {
+    return this.resumed
+  }
+
+  private addAssistant(assistant: AssistantRecord): void {
+    if (assistant.message?.model) this.model = assistant.message.model
+    const content = Array.isArray(assistant.message?.content) ? assistant.message.content : []
+    const toolCalls: ToolCallSummary[] = []
+    for (const block of content) {
+      if (block?.type !== 'tool_use') continue
+      const inputHash = hashValue(block.input)
+      if (typeof block.name === 'string' && block.id) {
+        this.toolUses.push({ key: toolKey(block.name, inputHash), id: block.id })
+      }
+      toolCalls.push({
+        name: block.name || 'unknown',
+        inputHash,
+        outputHash: '',
+        inputLabel: extractInputLabel(block.name || '', block.input),
+      })
+    }
+
+    if (!assistant.message?.usage) return
+    const usage = normalizeUsage(assistant.message.usage)
+    const totalInput =
+      usage.input_tokens +
+      usage.cache_creation_input_tokens +
+      usage.cache_read_input_tokens
+
+    this.turns.push({
+      turnIndex: this.turns.length,
+      timestamp: assistant.timestamp,
+      usage,
+      cacheRatio: totalInput > 0 ? usage.cache_read_input_tokens / totalInput : 0,
+      toolCalls,
+      messageId: assistant.message.id,
+    })
+  }
+
+  private addUser(user: UserRecord): void {
+    if (user.cwd) this.cwd = user.cwd
+    if (user.gitBranch) this.gitBranch = user.gitBranch
+
+    const content = user.message?.content
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'tool_result') {
+          const toolBlock = block as Record<string, unknown>
+          const toolUseId = toolBlock.tool_use_id as string
+          if (toolUseId && toolBlock.content) this.resultHashes.set(toolUseId, hashValue(toolBlock.content))
+        }
+      }
+    }
+
+    if (!this.firstUserMessage) {
+      const text = firstUserText(content)
+      if (text !== null) this.firstUserMessage = text
+    }
+  }
 }
 
 /**
@@ -70,107 +205,9 @@ export async function parseJsonlFile(filePath: string): Promise<SessionRecord[]>
  * A "turn" is defined as a user message followed by an assistant response.
  */
 export function extractTurns(records: SessionRecord[]): TurnMetrics[] {
-  const turns: TurnMetrics[] = []
-  let turnIndex = 0
-
-  for (const record of records) {
-    if (record.type !== 'assistant') continue
-    const assistant = record as AssistantRecord
-    if (!assistant.message?.usage) continue
-
-    const usage = normalizeUsage(assistant.message.usage)
-    const totalInput =
-      usage.input_tokens +
-      usage.cache_creation_input_tokens +
-      usage.cache_read_input_tokens
-
-    const cacheRatio = totalInput > 0 ? usage.cache_read_input_tokens / totalInput : 0
-
-    const toolCalls: ToolCallSummary[] = (assistant.message.content || [])
-      .filter((block) => block.type === 'tool_use')
-      .map((block) => ({
-        name: block.name || 'unknown',
-        inputHash: hashValue(block.input),
-        outputHash: '', // filled in when tool_result is matched
-        inputLabel: extractInputLabel(block.name || '', block.input),
-      }))
-
-    turns.push({
-      turnIndex: turnIndex++,
-      timestamp: assistant.timestamp,
-      usage,
-      cacheRatio,
-      toolCalls,
-      messageId: assistant.message.id,
-    })
-  }
-
-  // Match tool results to tool calls for output hashes.
-  // In real Claude Code JSONL files, tool results are embedded as content
-  // blocks inside user messages (type: "tool_result" with tool_use_id),
-  // not as top-level records.
-  const toolResultMap = new Map<string, string>()
-
-  for (const record of records) {
-    // Check top-level tool_result records (spec format)
-    if (record.type === 'tool_result' && 'toolUseId' in record) {
-      const tr = record as { toolUseId: string; content: string }
-      toolResultMap.set(tr.toolUseId, tr.content)
-    }
-
-    // Check user messages for embedded tool_result content blocks (real format)
-    if (record.type === 'user') {
-      const userMsg = record as UserRecord
-      const content = userMsg.message?.content
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (
-            block &&
-            typeof block === 'object' &&
-            'type' in block &&
-            (block as Record<string, unknown>).type === 'tool_result'
-          ) {
-            const toolBlock = block as Record<string, unknown>
-            const toolUseId = toolBlock.tool_use_id as string
-            const resultContent = toolBlock.content
-            if (toolUseId && resultContent) {
-              const resultStr =
-                typeof resultContent === 'string'
-                  ? resultContent
-                  : JSON.stringify(resultContent)
-              toolResultMap.set(toolUseId, resultStr)
-            }
-          }
-        }
-      }
-    }
-  }
-
-  for (const turn of turns) {
-    for (const call of turn.toolCalls) {
-      const assistantRecords = records.filter(
-        (r) => r.type === 'assistant'
-      ) as AssistantRecord[]
-
-      for (const ar of assistantRecords) {
-        for (const block of ar.message.content || []) {
-          if (
-            block.type === 'tool_use' &&
-            block.name === call.name &&
-            hashValue(block.input) === call.inputHash &&
-            block.id
-          ) {
-            const result = toolResultMap.get(block.id)
-            if (result) {
-              call.outputHash = hashValue(result)
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return turns
+  const accumulator = new TranscriptAccumulator()
+  for (const record of records) accumulator.add(record)
+  return accumulator.getTurns()
 }
 
 /**
@@ -278,35 +315,38 @@ export function extractSessionContext(records: SessionRecord[]): SessionContext 
     }
   }
 
-  // Derive a short project name from the cwd
-  // Works on both Unix (/) and Windows (\) paths
-  const projectName = cwd ? cwd.split(/[/\\]/).filter(Boolean).pop() ?? null : null
-
-  // Extract first user message — useful for subagent labeling
   let firstUserMessage: string | null = null
   for (const record of records) {
-    if (record.type === 'user') {
-      const user = record as UserRecord
-      const content = user.message?.content
-      if (typeof content === 'string' && content.trim()) {
-        firstUserMessage = content.trim()
-        break
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block && typeof block === 'object' && 'type' in block) {
-            const b = block as Record<string, unknown>
-            if (b.type === 'text' && typeof b.text === 'string') {
-              firstUserMessage = (b.text as string).trim()
-              break
-            }
-          }
-        }
-        if (firstUserMessage) break
-      }
-    }
+    if (record.type !== 'user') continue
+    const text = firstUserText((record as UserRecord).message?.content)
+    if (text !== null) firstUserMessage = text
+    if (firstUserMessage) break
   }
 
-  return { cwd, gitBranch, projectName, firstUserMessage }
+  return { cwd, gitBranch, projectName: projectNameOf(cwd), firstUserMessage }
+}
+
+function projectNameOf(cwd: string | null): string | null {
+  // Splits on both separators so Windows paths work too.
+  return cwd ? cwd.split(/[/\\]/).filter(Boolean).pop() ?? null : null
+}
+
+/**
+ * A user message's text, used to label subagents: a non-blank string, or the
+ * first text block (even an empty one) of a block array. Null otherwise.
+ */
+function firstUserText(content: unknown): string | null {
+  if (typeof content === 'string') return content.trim() || null
+  if (!Array.isArray(content)) return null
+  for (const block of content) {
+    const b = block as Record<string, unknown> | null
+    if (b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string') return b.text.trim()
+  }
+  return null
+}
+
+function toolKey(name: string, inputHash: string): string {
+  return `${name}\0${inputHash}`
 }
 
 /**

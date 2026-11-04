@@ -973,20 +973,15 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     const config = await loadConfig()
-    const { SessionStore } = await import('./daemon/store.js')
-    const { SessionWatcher } = await import('./daemon/watcher.js')
+    const { scanCacheIssues } = await import('./features/doctor.js')
 
-    const store = new SessionStore()
-    const watcher = new SessionWatcher(store, {
+    if (!options.json) console.log('Scanning session files...')
+    const { sessions, issues } = await scanCacheIssues({
       projectsDir: config.watch.projectsDir,
       projectPath: options.project ? resolve(options.project) : undefined,
     })
 
-    if (!options.json) console.log('Scanning session files...')
-    await watcher.scanAll()
-
-    const sessions = store.getAll()
-    if (sessions.length === 0) {
+    if (sessions === 0) {
       if (options.json) {
         console.log(JSON.stringify({ sessions: 0, issues: [] }))
       } else {
@@ -995,41 +990,13 @@ program
       return
     }
 
-    const issues: Array<{
-      label: string
-      severity: 'broken' | 'degraded'
-      turns: number
-      cacheRatio: number
-      trend: number[]
-    }> = []
-
-    for (const session of sessions) {
-      if (session.cacheHealth.degradationDetected) {
-        issues.push({
-          label: session.label,
-          severity: 'broken',
-          turns: session.turns.length,
-          cacheRatio: session.cacheHealth.lastCacheRatio,
-          trend: session.cacheHealth.cacheRatioTrend,
-        })
-      } else if (session.cacheHealth.status === 'degraded') {
-        issues.push({
-          label: session.label,
-          severity: 'degraded',
-          turns: session.turns.length,
-          cacheRatio: session.cacheHealth.lastCacheRatio,
-          trend: session.cacheHealth.cacheRatioTrend,
-        })
-      }
-    }
-
     if (options.json) {
-      console.log(JSON.stringify({ sessions: sessions.length, issues }, null, 2))
+      console.log(JSON.stringify({ sessions, issues }, null, 2))
       return
     }
 
     if (issues.length === 0) {
-      console.log(`\n✓ No cache issues detected across ${sessions.length} sessions.`)
+      console.log(`\n✓ No cache issues detected across ${sessions} sessions.`)
       return
     }
 
