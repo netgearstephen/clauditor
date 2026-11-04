@@ -5,12 +5,15 @@
  * clauditor hook exists in settings.json). This respects audit-only users
  * who intentionally skip hook registration.
  *
+ * The same users get ~/.clauditor/config.json seeded when it is absent.
+ *
  * Silent on failure (|| true in package.json).
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { writeConfigIfMissing } from './config.js'
 
 const SETTINGS_PATH = resolve(homedir(), '.claude/settings.json')
 const CLAUDITOR_MARKER = 'clauditor hook'
@@ -55,6 +58,11 @@ try {
     // No clauditor hooks — respect audit-only mode
     process.exit(0)
   }
+
+  // Its own try: a failed seed must not stop the missing hooks being registered.
+  try {
+    if (writeConfigIfMissing()) console.log('clauditor: seeded ~/.clauditor/config.json')
+  } catch {}
 
   // User has clauditor hooks — check for missing ones and add them
   let added = 0

@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, renameSync, rmSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 const CONFIG_DIR = resolve(homedir(), '.clauditor')
@@ -255,29 +255,82 @@ export function getProjectHubConfig(gitRemoteUrl: string): ProjectHubConfig | nu
  * Save hub config for a specific project.
  */
 export function setProjectHubConfig(gitRemoteUrl: string, hubConfig: ProjectHubConfig): void {
-  const config = readConfig()
-  if (!config.projects) config.projects = {}
-  config.projects[gitRemoteUrl] = hubConfig
+  // Seeded first, or a login before install would leave a file the seed never fills.
+  writeConfigIfMissing()
+  // The raw file, not readConfig(): merging first would freeze every default into it.
+  let raw = readRawConfig()
+  if (!isObject(raw)) {
+    // Set aside, not overwritten or refused, so neither the hand edits nor this login is lost.
+    const aside = `${CONFIG_FILE}.invalid-${Date.now()}-${process.pid}`
+    renameSync(CONFIG_FILE, aside)
+    console.warn(`${CONFIG_FILE} did not hold a JSON object, so it was moved to ${aside}.`)
+    raw = writeConfigIfMissing() ? structuredClone(SEED_CONFIG) : {}
+  }
+  const config = raw as Partial<ClauditorUserConfig>
+  config.projects = { ...(isObject(config.projects) ? config.projects : {}), [gitRemoteUrl]: hubConfig }
   writeConfig(config)
 }
 
-/**
- * Write the full config to disk.
- */
-export function writeConfig(config: ClauditorUserConfig): void {
+/** The parsed file, `{}` when absent, or undefined when it is not JSON; other read errors throw. */
+function readRawConfig(): unknown {
+  try {
+    return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    if (err instanceof SyntaxError) return undefined
+    throw err
+  }
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+export function writeConfig(config: Partial<ClauditorUserConfig>): void {
   mkdirSync(CONFIG_DIR, { recursive: true })
   writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n')
 }
 
+type Rotation = ClauditorUserConfig['rotation']
+
 /**
- * Write config. Only writes if file doesn't exist (preserves user edits).
+ * What a new install starts from. Only these keys are written, so every other
+ * setting keeps following DEFAULTS rather than being frozen at install time.
  */
-export function writeConfigIfMissing(): void {
+export const SEED_CONFIG: { rotation: Partial<Omit<Rotation, 'trigger'>> & { trigger: Partial<TriggerConfig> } } = {
+  rotation: {
+    trigger: {
+      peakContext: 130_000,
+      perModel: { 'claude-haiku-5': { peakContext: 70_000 } },
+    },
+    reBankGrowth: 50_000,
+    nudgeLead: 25_000,
+    blockAfterBank: true,
+  },
+}
+
+/** Seed the config file unless one exists; never overwrites. Returns whether it wrote. */
+export function writeConfigIfMissing(file: string = CONFIG_FILE): boolean {
+  if (existsSync(file)) return false
+  mkdirSync(dirname(file), { recursive: true })
+  // Written aside and hard-linked in, so an interrupted write never leaves a
+  // truncated file that the exists check would then keep forever.
+  const data = JSON.stringify(SEED_CONFIG, null, 2) + '\n'
+  const tmp = `${file}.${process.pid}.tmp`
   try {
-    readFileSync(CONFIG_FILE)
-    // File exists — don't overwrite
-  } catch {
-    mkdirSync(CONFIG_DIR, { recursive: true })
-    writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULTS, null, 2) + '\n')
+    writeFileSync(tmp, data)
+    try {
+      linkSync(tmp, file)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw err
+      // No hard links on this filesystem (FAT, some network mounts): write directly.
+      writeFileSync(file, data, { flag: 'wx' })
+    }
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
+    throw err
+  } finally {
+    rmSync(tmp, { force: true })
   }
 }

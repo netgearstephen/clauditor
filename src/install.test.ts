@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { installHooks } from './install.js'
 
 /**
@@ -20,6 +20,8 @@ describe('installHooks', () => {
 
   afterEach(() => {
     rmSync(claudeDir, { recursive: true, force: true })
+    // installHooks seeds the sandbox config; left behind, it would change later tests' gate.
+    rmSync(join(homedir(), '.clauditor', 'config.json'), { force: true })
   })
 
   const hooks = () =>
@@ -95,10 +97,9 @@ describe('installHooks', () => {
     expect(commands('PreToolUse')).toEqual(['other-tool check', 'clauditor hook pre-tool-use'])
   })
 
-  it('names the peak gate in the handoff message', async () => {
-    // Install has no model, so the resolved gate is the top-level default,
-    // not a per-model override or a window clamp. 150k pins that default.
+  it('names the top-level gate in the handoff message', async () => {
     const messages = await installHooks(claudeDir)
-    expect(messages.join('\n')).toContain('peak context reaches 150k')
+    expect(messages.join('\n')).toContain('peak context reaches 130k')
+    expect(messages.join('\n')).toContain('edits that would make it stale are refused')
   })
 })

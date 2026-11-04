@@ -7,8 +7,9 @@ import { readJsonFile, writeJsonFileAtomic } from '../hooks/shared.js'
  * the gate with nothing banked. This asks the model to reach a stopping point
  * from inside the turn, so the next Stop does the bank.
  *
- * Once per gate crossing, then again only after `growth` more tokens, and not
- * at all while the session's own bank is still current.
+ * First from `lead` below the gate, again on reaching the gate if that first
+ * nudge came below it, then only after `growth` more tokens. Never while the
+ * session's own bank is still current.
  */
 export function shouldNudgeRotation({
   context,
@@ -30,7 +31,9 @@ export function shouldNudgeRotation({
 }): boolean {
   if (context < gate - lead) return false
   if (bankedPeak > 0 && context < bankedPeak + growth) return false
-  if (nudgedAt > 0 && context < nudgedAt + growth) return false
+  // An early nudge spent below the gate must not silence the one at the gate.
+  const crossedSinceNudge = nudgedAt < gate && context >= gate
+  if (nudgedAt > 0 && context < nudgedAt + growth && !crossedSinceNudge) return false
   return true
 }
 
