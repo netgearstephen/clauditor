@@ -121,9 +121,24 @@ describe('writeConfigIfMissing', () => {
     expect(readdirSync(CONFIG_DIR)).toEqual(['config.json'])
   })
 
+  const hub = { apiKey: 'k', url: 'u', developerHash: 'd' }
+
   it('saves a hub project over a file holding non-object JSON', () => {
     write(null)
-    setProjectHubConfig('github.com/a/b', { apiKey: 'k', url: 'u', developerHash: 'd' })
+    setProjectHubConfig('github.com/a/b', hub)
     expect(Object.keys(JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')))).toEqual(['projects'])
+  })
+
+  it('replaces a non-object projects value rather than spreading it', () => {
+    write({ projects: 'x' })
+    setProjectHubConfig('github.com/a/b', hub)
+    expect(JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')).projects).toEqual({ 'github.com/a/b': hub })
+  })
+
+  it('refuses to overwrite a config that does not parse', () => {
+    mkdirSync(CONFIG_DIR, { recursive: true })
+    writeFileSync(CONFIG_FILE, '{ "rotation": { "nudgeLead": 1, } }')
+    expect(() => setProjectHubConfig('github.com/a/b', hub)).toThrow(/not valid JSON/)
+    expect(readFileSync(CONFIG_FILE, 'utf-8')).toBe('{ "rotation": { "nudgeLead": 1, } }')
   })
 })

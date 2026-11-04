@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -259,22 +259,25 @@ export function setProjectHubConfig(gitRemoteUrl: string, hubConfig: ProjectHubC
   writeConfigIfMissing()
   // The raw file, not readConfig(): merging first would freeze every default into it.
   let raw: Partial<ClauditorUserConfig> = {}
-  try { raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) } catch {}
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {}
-  raw.projects = { ...raw.projects, [gitRemoteUrl]: hubConfig }
+  if (existsSync(CONFIG_FILE)) {
+    try {
+      raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
+    } catch {
+      throw new Error(`${CONFIG_FILE} is not valid JSON; fix it and try again.`)
+    }
+  }
+  if (!isObject(raw)) raw = {}
+  raw.projects = { ...(isObject(raw.projects) ? raw.projects : {}), [gitRemoteUrl]: hubConfig }
   writeConfig(raw)
 }
 
-/** Renamed into place, so a hook reading mid-write never sees a partial file. */
+function isObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
 export function writeConfig(config: Partial<ClauditorUserConfig>): void {
   mkdirSync(CONFIG_DIR, { recursive: true })
-  const tmp = `${CONFIG_FILE}.${process.pid}.tmp`
-  try {
-    writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n')
-    renameSync(tmp, CONFIG_FILE)
-  } finally {
-    rmSync(tmp, { force: true })
-  }
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n')
 }
 
 type Rotation = ClauditorUserConfig['rotation']
