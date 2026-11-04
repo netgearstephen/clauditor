@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionWatcher } from './watcher.js'
@@ -65,4 +65,158 @@ describe('SessionWatcher.scanRecent', () => {
     await new SessionWatcher(store, { projectsDir: dir }).scanRecent({ maxFiles: 10, maxBytes: oneFile * 2 })
     expect(store.getAll().map((s) => s.sessionId).sort()).toEqual(['s3', 's4'])
   })
+})
+
+describe('SessionStore without retention', () => {
+  it('passes each update to listeners but keeps none', () => {
+    const store = new SessionStore({ retain: false })
+    const seen: number[] = []
+    store.onUpdate((_id, state) => seen.push(state.turns.length))
+    const turn = {
+      turnIndex: 0, timestamp: '2026-01-01T00:00:00Z', cacheRatio: 0, toolCalls: [],
+      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    }
+    store.update('s1', '/p/s1.jsonl', 'p', [turn])
+    expect(seen).toEqual([1])
+    expect(store.getAll()).toEqual([])
+  })
+})
+
+describe('SessionWatcher per-file state', () => {
+  let dir: string
+  let file: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'clauditor-watcher-'))
+    mkdirSync(join(dir, '-proj'))
+    file = join(dir, '-proj', 's1.jsonl')
+    writeFileSync(file, transcript('s1', 2))
+  })
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('keeps nothing per file after a one-shot scan', async () => {
+    const watcher = new SessionWatcher(new SessionStore(), { projectsDir: dir })
+    await watcher.scanAll()
+    expect((watcher as unknown as { fileState: Map<string, unknown> }).fileState.size).toBe(0)
+  })
+
+  it('adds only the appended turns while following a file', async () => {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      appendFileSync(file, transcript('s1', 3))
+      const w = watcher as unknown as { processFile(p: string): Promise<void>; processFileIncremental(p: string): Promise<void> }
+      const full = vi.spyOn(w, 'processFile')
+      await w.processFileIncremental(file)
+      expect(full).not.toHaveBeenCalled()
+      const turns = store.getAll()[0].turns
+      expect(turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4])
+    } finally {
+      await watcher.stop()
+    }
+  })
+
+  type Internals = {
+    enqueue(p: string, task: () => Promise<void>): Promise<void>
+    processFile(p: string): Promise<void>
+    processFileIncremental(p: string): Promise<void>
+  }
+
+  it('reads each appended record once when change events overlap', async () => {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      appendFileSync(file, transcript('s1', 3))
+      const w = watcher as unknown as Internals
+      const change = () => w.enqueue(file, () => w.processFileIncremental(file))
+      await Promise.all([change(), change()])
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4])
+    } finally {
+      await watcher.stop()
+    }
+  })
+
+  it('drops a half-fed accumulator when an incremental read fails', async () => {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      const w = watcher as unknown as Internals & { fileState: Map<string, { add(r: unknown): void }> }
+      const acc = w.fileState.get(file)!
+      appendFileSync(file, transcript('s1', 3))
+      const add = acc.add.bind(acc)
+      let seen = 0
+      vi.spyOn(acc, 'add').mockImplementation((r) => {
+        add(r)
+        if (++seen === 2) throw new Error('read failed')
+      })
+      // The full re-parse fallback fails too, and swallows its error as it does on a vanished file.
+      vi.spyOn(w, 'processFile').mockResolvedValueOnce(undefined)
+      await w.processFileIncremental(file)
+      appendFileSync(file, transcript('s1', 1))
+      await w.processFileIncremental(file)
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4, 5])
+    } finally {
+      await watcher.stop()
+    }
+  })
+
+  async function following(run: (w: Internals, store: SessionStore) => Promise<void>) {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      await run(watcher as unknown as Internals, store)
+    } finally {
+      await watcher.stop()
+    }
+  }
+
+  it('re-parses a file rewritten in place to a larger size', () =>
+    following(async (w, store) => {
+      // One turn with records long enough that the old end offset falls mid-line.
+      writeFileSync(file, transcript('s'.repeat(400), 1))
+      await w.processFileIncremental(file)
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0])
+    }))
+
+  it('re-parses a file replaced by a rename even when the old end lands on a line break', () =>
+    following(async (w, store) => {
+      const tmp = `${file}.tmp`
+      writeFileSync(tmp, (transcript('s1', 2) + transcript('s1', 1)).replaceAll('2026-01', '2026-02'))
+      renameSync(tmp, file)
+      await w.processFileIncremental(file)
+      expect(store.getAll()[0].turns.map((t) => t.timestamp.slice(0, 7))).toEqual(Array(3).fill('2026-02'))
+    }))
+
+  it('forgets the old state when the full re-parse after a rewrite fails', () =>
+    following(async (w) => {
+      const state = (w as unknown as { fileState: Map<string, unknown> }).fileState
+      // A directory in its place: stat succeeds and shrinks, the read fails, even as root.
+      rmSync(file)
+      mkdirSync(file)
+      await w.processFileIncremental(file)
+      expect(state.has(file)).toBe(false)
+    }))
+
+  it('keeps the incremental state when a store listener throws', () =>
+    following(async (w, store) => {
+      const full = vi.spyOn(w, 'processFile')
+      store.onUpdate(() => { throw new Error('listener bug') })
+      appendFileSync(file, transcript('s1', 1))
+      await w.processFileIncremental(file)
+      expect(full).not.toHaveBeenCalled()
+      expect(store.getAll()[0].turns.map((t) => t.turnIndex)).toEqual([0, 1, 2])
+    }))
+
+  it('keeps the state of a full parse when a store listener throws', () =>
+    following(async (w, store) => {
+      const state = (w as unknown as { fileState: Map<string, unknown> }).fileState
+      store.onUpdate(() => { throw new Error('listener bug') })
+      await w.processFile(file)
+      expect(state.has(file)).toBe(true)
+    }))
 })
