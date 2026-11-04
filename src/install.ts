@@ -138,17 +138,13 @@ export async function installHooks(claudeDir?: string): Promise<string[]> {
   const { writeConfigIfMissing, readConfig } = await import('./config.js')
   writeConfigIfMissing()
 
-  // No session model yet, so each per-model override is resolved by its own key.
+  // No session model at install time, so this names the top-level gate.
   const { resolveTrigger } = await import('./features/trigger.js')
   const config = readConfig()
   const gate = resolveTrigger(null, config).gate
-  const perModel = Object.entries(config.rotation.trigger.perModel)
-    .filter(([, o]) => Number.isFinite(o?.peakContext))
-    .map(([model]) => `${model} ${Math.round(resolveTrigger(model, config).gate / 1000)}k`)
   messages.push(
     `Session handoffs: ✓ enabled, banks one warm handoff per session once ` +
-    `peak context reaches ${(gate / 1000).toFixed(0)}k` +
-    (perModel.length ? ` (${perModel.join(', ')})` : '') + '. ' +
+    `peak context reaches ${(gate / 1000).toFixed(0)}k. ` +
     (config.rotation.blockAfterBank
       ? 'After a bank, edits that would make it stale are refused.'
       : 'Never blocks.')

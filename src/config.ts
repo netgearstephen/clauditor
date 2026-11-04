@@ -261,7 +261,7 @@ export function setProjectHubConfig(gitRemoteUrl: string, hubConfig: ProjectHubC
   let raw = readRawConfig()
   if (!isObject(raw)) {
     // Set aside, not overwritten or refused, so neither the hand edits nor this login is lost.
-    const aside = `${CONFIG_FILE}.invalid-${Date.now()}`
+    const aside = `${CONFIG_FILE}.invalid-${Date.now()}-${process.pid}`
     renameSync(CONFIG_FILE, aside)
     console.warn(`${CONFIG_FILE} did not hold a JSON object, so it was moved to ${aside}.`)
     raw = writeConfigIfMissing() ? structuredClone(SEED_CONFIG) : {}
