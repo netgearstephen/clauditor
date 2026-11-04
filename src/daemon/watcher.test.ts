@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionWatcher } from './watcher.js'
@@ -64,5 +64,54 @@ describe('SessionWatcher.scanRecent', () => {
     const oneFile = Buffer.byteLength(transcript('s0'))
     await new SessionWatcher(store, { projectsDir: dir }).scanRecent({ maxFiles: 10, maxBytes: oneFile * 2 })
     expect(store.getAll().map((s) => s.sessionId).sort()).toEqual(['s3', 's4'])
+  })
+})
+
+describe('SessionStore without retention', () => {
+  it('passes each update to listeners but keeps none', () => {
+    const store = new SessionStore({ retain: false })
+    const seen: number[] = []
+    store.onUpdate((_id, state) => seen.push(state.turns.length))
+    const turn = {
+      turnIndex: 0, timestamp: '2026-01-01T00:00:00Z', cacheRatio: 0, toolCalls: [],
+      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    }
+    store.update('s1', '/p/s1.jsonl', 'p', [turn])
+    expect(seen).toEqual([1])
+    expect(store.getAll()).toEqual([])
+  })
+})
+
+describe('SessionWatcher per-file state', () => {
+  let dir: string
+  let file: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'clauditor-watcher-'))
+    mkdirSync(join(dir, '-proj'))
+    file = join(dir, '-proj', 's1.jsonl')
+    writeFileSync(file, transcript('s1', 2))
+  })
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('keeps nothing per file after a one-shot scan', async () => {
+    const watcher = new SessionWatcher(new SessionStore(), { projectsDir: dir })
+    await watcher.scanAll()
+    expect((watcher as unknown as { fileState: Map<string, unknown> }).fileState.size).toBe(0)
+  })
+
+  it('adds only the appended turns while following a file', async () => {
+    const store = new SessionStore()
+    const watcher = new SessionWatcher(store, { projectsDir: dir, pollInterval: 60_000 })
+    await watcher.start()
+    try {
+      appendFileSync(file, transcript('s1', 3))
+      await (watcher as unknown as { processFileIncremental(p: string): Promise<void> }).processFileIncremental(file)
+      const turns = store.getAll()[0].turns
+      expect(turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4])
+    } finally {
+      await watcher.stop()
+    }
   })
 })

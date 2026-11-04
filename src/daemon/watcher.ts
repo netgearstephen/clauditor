@@ -1,11 +1,9 @@
 import { watch, type FSWatcher } from 'chokidar'
 import { resolve, basename, sep } from 'node:path'
 import { homedir } from 'node:os'
-import { readdir, stat, open } from 'node:fs/promises'
-import { parseJsonlLine, parseJsonlFile, extractTurns, extractModel, extractSessionContext } from './parser.js'
-import { hasResumeBoundary } from '../features/resume-detector.js'
+import { readdir, stat } from 'node:fs/promises'
+import { readJsonlRecords, TranscriptAccumulator } from './parser.js'
 import { SessionStore } from './store.js'
-import type { SessionRecord } from '../types.js'
 
 export interface WatcherOptions {
   projectsDir?: string
@@ -20,10 +18,11 @@ export class SessionWatcher {
   private projectPath: string | null
   private pollInterval: number
 
-  // Track file offsets for incremental reading
+  // Only filled once start() is watching: a one-shot scan of every transcript
+  // must not keep per-file state, or its memory grows with the whole history.
   private fileOffsets = new Map<string, number>()
-  // Cache parsed records per file so we only parse new lines
-  private fileRecords = new Map<string, SessionRecord[]>()
+  private fileState = new Map<string, TranscriptAccumulator>()
+  private following = false
 
   constructor(store: SessionStore, options: WatcherOptions = {}) {
     this.store = store
@@ -33,6 +32,7 @@ export class SessionWatcher {
   }
 
   async start(): Promise<void> {
+    this.following = true
     // Eagerly scan existing files first so the TUI has data immediately
     await this.scanAll()
 
@@ -83,7 +83,7 @@ export class SessionWatcher {
 
   /**
    * Parse only the newest transcripts, bounded by count and total bytes.
-   * scanAll parses every transcript ever written (GBs of heap), which is
+   * scanAll parses every transcript ever written, which is
    * fine for an on-demand command but froze the machine when every pane of
    * a herdr restore ran it from the SessionStart hook at once.
    */
@@ -146,20 +146,22 @@ export class SessionWatcher {
   }
 
   /**
-   * Full parse — used for initial scan and new files.
+   * Full parse, streamed: used for the initial scan and for new files.
    */
   private async processFile(filePath: string): Promise<void> {
     try {
-      const records = await parseJsonlFile(filePath)
+      const { size } = await stat(filePath)
+      const accumulator = new TranscriptAccumulator()
+      if (size > 0) {
+        for await (const record of readJsonlRecords(filePath, { end: size - 1 })) accumulator.add(record)
+      }
 
-      // Cache records and track file size for incremental reads
-      this.fileRecords.set(filePath, records)
-      try {
-        const fileStat = await stat(filePath)
-        this.fileOffsets.set(filePath, fileStat.size)
-      } catch {}
+      if (this.following) {
+        this.fileState.set(filePath, accumulator)
+        this.fileOffsets.set(filePath, size)
+      }
 
-      this.updateStore(filePath, records)
+      this.updateStore(filePath, accumulator)
     } catch {
       // Ignore corrupt or in-progress files
     }
@@ -171,9 +173,9 @@ export class SessionWatcher {
    */
   private async processFileIncremental(filePath: string): Promise<void> {
     const lastOffset = this.fileOffsets.get(filePath)
+    const accumulator = this.fileState.get(filePath)
 
-    if (lastOffset === undefined) {
-      // Never seen this file — do a full parse
+    if (lastOffset === undefined || !accumulator) {
       return this.processFile(filePath)
     }
 
@@ -185,47 +187,33 @@ export class SessionWatcher {
         return this.processFile(filePath)
       }
 
-      // Read only the new bytes
-      const fh = await open(filePath, 'r')
-      try {
-        const newBytes = Buffer.alloc(fileStat.size - lastOffset)
-        await fh.read(newBytes, 0, newBytes.length, lastOffset)
-
-        const newContent = newBytes.toString('utf-8')
-        const newLines = newContent.split('\n')
-        const newRecords: SessionRecord[] = []
-
-        for (const line of newLines) {
-          const record = parseJsonlLine(line)
-          if (record) newRecords.push(record)
-        }
-
-        // Append new records to cache
-        const existingRecords = this.fileRecords.get(filePath) || []
-        const allRecords = [...existingRecords, ...newRecords]
-        this.fileRecords.set(filePath, allRecords)
-        this.fileOffsets.set(filePath, fileStat.size)
-
-        this.updateStore(filePath, allRecords)
-      } finally {
-        await fh.close()
+      for await (const record of readJsonlRecords(filePath, { start: lastOffset, end: fileStat.size - 1 })) {
+        accumulator.add(record)
       }
+      this.fileOffsets.set(filePath, fileStat.size)
+
+      this.updateStore(filePath, accumulator)
     } catch {
       // Incremental failed — fall back to full parse
       return this.processFile(filePath)
     }
   }
 
-  private updateStore(filePath: string, records: SessionRecord[]): void {
+  private updateStore(filePath: string, transcript: TranscriptAccumulator): void {
     const sessionId = extractSessionId(filePath)
     const projectPath = extractProjectPath(filePath, this.projectsDir)
-    const turns = extractTurns(records)
-    const model = extractModel(records)
-    const context = extractSessionContext(records)
-    const isResumed = hasResumeBoundary(records)
+    const turns = transcript.getTurns()
 
     if (turns.length > 0) {
-      this.store.update(sessionId, filePath, projectPath, turns, model, context, isResumed)
+      this.store.update(
+        sessionId,
+        filePath,
+        projectPath,
+        turns,
+        transcript.getModel(),
+        transcript.getContext(),
+        transcript.isResumed(),
+      )
     }
   }
 }

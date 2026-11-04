@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { parseJsonlLine, extractTurns, aggregateUsage } from './parser.js'
+import {
+  parseJsonlLine,
+  extractTurns,
+  extractModel,
+  extractSessionContext,
+  aggregateUsage,
+  TranscriptAccumulator,
+} from './parser.js'
+import { hasResumeBoundary } from '../features/resume-detector.js'
 import type { AssistantRecord, UserRecord, ToolResultRecord, SessionRecord } from '../types.js'
 
 describe('parseJsonlLine', () => {
@@ -158,6 +166,63 @@ describe('extractTurns', () => {
     const turns = extractTurns(records)
     expect(turns[0].toolCalls).toHaveLength(1)
     expect(turns[0].toolCalls[0].name).toBe('Bash')
+  })
+  function toolResult(id: string, content: string): UserRecord {
+    return {
+      type: 'user', uuid: `r${id}`, parentUuid: null, sessionId: 's1', timestamp: '',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] },
+    }
+  }
+
+  it('gives a repeated call the output of the latest identical call', () => {
+    const records: SessionRecord[] = [
+      makeAssistant(0, { input: 1, output: 1, cacheCreate: 0, cacheRead: 0 }, [{ name: 'Bash', input: { command: 'ls' } }]),
+      toolResult('tool_0_0', 'first'),
+      makeAssistant(1, { input: 1, output: 1, cacheCreate: 0, cacheRead: 0 }, [{ name: 'Bash', input: { command: 'ls' } }]),
+      toolResult('tool_1_0', 'second'),
+    ]
+    const [first, second] = extractTurns(records)
+    expect(first.toolCalls[0].outputHash).not.toBe('')
+    expect(first.toolCalls[0].outputHash).toBe(second.toolCalls[0].outputHash)
+    expect(first.toolCalls[0].outputHash).not.toBe(extractTurns(records.slice(0, 2))[0].toolCalls[0].outputHash)
+  })
+})
+
+describe('TranscriptAccumulator', () => {
+  it('matches a whole-array parse when records arrive in two batches', () => {
+    const user: UserRecord = {
+      type: 'user', uuid: 'u0', parentUuid: null, sessionId: 's1', timestamp: '',
+      cwd: '/work/repo', gitBranch: 'main', message: { role: 'user', content: 'start here' },
+    }
+    const call: AssistantRecord = {
+      type: 'assistant', uuid: 'a0', parentUuid: 'u0', sessionId: 's1', timestamp: 't0',
+      message: {
+        role: 'assistant', model: 'claude-opus-4-6',
+        content: [{ type: 'tool_use', id: 'tool_a', name: 'Read', input: { file_path: '/x/y.ts' } }],
+        usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 100, cache_read_input_tokens: 0 },
+      },
+    }
+    const result: UserRecord = {
+      type: 'user', uuid: 'u1', parentUuid: 'a0', sessionId: 's1', timestamp: '', gitBranch: 'feature',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool_a', content: 'body' }] },
+    }
+    const records: SessionRecord[] = [user, call, { type: 'compact_boundary' }, result]
+
+    const accumulator = new TranscriptAccumulator()
+    accumulator.add(user)
+    accumulator.add(call)
+    expect(accumulator.getTurns()[0].toolCalls[0].outputHash).toBe('')
+    accumulator.add({ type: 'compact_boundary' })
+    accumulator.add(result)
+
+    expect(accumulator.getTurns()).toEqual(extractTurns(records))
+    expect(accumulator.getTurns()[0].toolCalls[0].outputHash).not.toBe('')
+    expect(accumulator.getModel()).toBe(extractModel(records))
+    expect(accumulator.getContext()).toEqual(extractSessionContext(records))
+    expect(accumulator.getContext()).toEqual({
+      cwd: '/work/repo', gitBranch: 'feature', projectName: 'repo', firstUserMessage: 'start here',
+    })
+    expect(accumulator.isResumed()).toBe(hasResumeBoundary(records))
   })
 })
 

@@ -9,6 +9,15 @@ export class SessionStore {
   // "agent-a2" repeat across different parent sessions.
   private sessions = new Map<string, SessionState>()
   private listeners = new Set<(sessionId: string, state: SessionState) => void>()
+  private retain: boolean
+
+  /**
+   * With `retain: false` each update only reaches the listeners, so a scan of
+   * every transcript can be summarised without holding every session's turns.
+   */
+  constructor({ retain = true }: { retain?: boolean } = {}) {
+    this.retain = retain
+  }
 
   get(sessionId: string): SessionState | undefined {
     return this.sessions.get(sessionId)
@@ -87,7 +96,7 @@ export class SessionStore {
       lastUpdated,
     }
 
-    this.sessions.set(filePath, state)
+    if (this.retain) this.sessions.set(filePath, state)
     this.notifyListeners(sessionId, state)
     return state
   }
