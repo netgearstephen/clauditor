@@ -97,6 +97,14 @@ describe('installHooks', () => {
     expect(commands('PreToolUse')).toEqual(['other-tool check', 'clauditor hook pre-tool-use'])
   })
 
+  it('skips a malformed per-model entry in the handoff message', async () => {
+    mkdirSync(join(homedir(), '.clauditor'), { recursive: true })
+    writeFileSync(join(homedir(), '.clauditor', 'config.json'),
+      JSON.stringify({ rotation: { trigger: { perModel: { 'claude-opus-5': null } } } }))
+    const messages = await installHooks(claudeDir)
+    expect(messages.join('\n')).toContain('peak context reaches 150k. ')
+  })
+
   it('names the top-level and per-model gates in the handoff message', async () => {
     const messages = await installHooks(claudeDir)
     expect(messages.join('\n')).toContain('peak context reaches 130k (claude-haiku-5 70k).')

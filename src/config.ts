@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, renameSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -255,16 +255,26 @@ export function getProjectHubConfig(gitRemoteUrl: string): ProjectHubConfig | nu
  * Save hub config for a specific project.
  */
 export function setProjectHubConfig(gitRemoteUrl: string, hubConfig: ProjectHubConfig): void {
+  // Seeded first, or a login before install would leave a file the seed never fills.
+  writeConfigIfMissing()
   // The raw file, not readConfig(): merging first would freeze every default into it.
   let raw: Partial<ClauditorUserConfig> = {}
   try { raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) } catch {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {}
   raw.projects = { ...raw.projects, [gitRemoteUrl]: hubConfig }
   writeConfig(raw)
 }
 
+/** Renamed into place, so a hook reading mid-write never sees a partial file. */
 export function writeConfig(config: Partial<ClauditorUserConfig>): void {
   mkdirSync(CONFIG_DIR, { recursive: true })
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n')
+  const tmp = `${CONFIG_FILE}.${process.pid}.tmp`
+  try {
+    writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n')
+    renameSync(tmp, CONFIG_FILE)
+  } finally {
+    rmSync(tmp, { force: true })
+  }
 }
 
 type Rotation = ClauditorUserConfig['rotation']
@@ -291,10 +301,17 @@ export function writeConfigIfMissing(file: string = CONFIG_FILE): boolean {
   mkdirSync(dirname(file), { recursive: true })
   // Written aside and hard-linked in, so an interrupted write never leaves a
   // truncated file that the exists check would then keep forever.
+  const data = JSON.stringify(SEED_CONFIG, null, 2) + '\n'
   const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(SEED_CONFIG, null, 2) + '\n')
   try {
-    linkSync(tmp, file)
+    writeFileSync(tmp, data)
+    try {
+      linkSync(tmp, file)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw err
+      // No hard links on this filesystem (FAT, some network mounts): write directly.
+      writeFileSync(file, data, { flag: 'wx' })
+    }
     return true
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false

@@ -144,7 +144,7 @@ export async function installHooks(claudeDir?: string): Promise<string[]> {
   const config = readConfig()
   const gate = resolveTrigger(null, config).gate
   const perModel = Object.entries(config.rotation.trigger.perModel)
-    .filter(([, o]) => o.peakContext !== undefined)
+    .filter(([, o]) => typeof o?.peakContext === 'number')
     .map(([model, o]) => `${model} ${(o.peakContext! / 1000).toFixed(0)}k`)
   messages.push(
     `Session handoffs: ✓ enabled, banks one warm handoff per session once ` +

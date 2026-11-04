@@ -111,13 +111,19 @@ describe('writeConfigIfMissing', () => {
     }
   })
 
-  it('stays lean after a hub project is saved into it', () => {
-    writeConfigIfMissing()
+  it('seeds and stays lean when a hub login comes before install', () => {
     const hub = { apiKey: 'k', url: 'https://hub.example', developerHash: 'd' }
     setProjectHubConfig('github.com/a/b', hub)
     const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
     expect(Object.keys(raw).sort()).toEqual(['projects', 'rotation'])
     expect(raw.rotation.trigger).toEqual({ peakContext: 130_000, perModel: { 'claude-haiku-5': { peakContext: 70_000 } } })
     expect(raw.projects['github.com/a/b']).toEqual(hub)
+    expect(readdirSync(CONFIG_DIR)).toEqual(['config.json'])
+  })
+
+  it('saves a hub project over a file holding non-object JSON', () => {
+    write(null)
+    setProjectHubConfig('github.com/a/b', { apiKey: 'k', url: 'u', developerHash: 'd' })
+    expect(Object.keys(JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')))).toEqual(['projects'])
   })
 })
