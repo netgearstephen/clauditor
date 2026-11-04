@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync, renameSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionWatcher } from './watcher.js'
@@ -107,7 +107,10 @@ describe('SessionWatcher per-file state', () => {
     await watcher.start()
     try {
       appendFileSync(file, transcript('s1', 3))
-      await (watcher as unknown as { processFileIncremental(p: string): Promise<void> }).processFileIncremental(file)
+      const w = watcher as unknown as { processFile(p: string): Promise<void>; processFileIncremental(p: string): Promise<void> }
+      const full = vi.spyOn(w, 'processFile')
+      await w.processFileIncremental(file)
+      expect(full).not.toHaveBeenCalled()
       const turns = store.getAll()[0].turns
       expect(turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4])
     } finally {
@@ -192,13 +195,10 @@ describe('SessionWatcher per-file state', () => {
   it('forgets the old state when the full re-parse after a rewrite fails', () =>
     following(async (w) => {
       const state = (w as unknown as { fileState: Map<string, unknown> }).fileState
-      writeFileSync(file, transcript('s1', 1))
-      chmodSync(file, 0o000)
-      try {
-        await w.processFileIncremental(file)
-      } finally {
-        chmodSync(file, 0o644)
-      }
+      // A directory in its place: stat succeeds and shrinks, the read fails, even as root.
+      rmSync(file)
+      mkdirSync(file)
+      await w.processFileIncremental(file)
       expect(state.has(file)).toBe(false)
     }))
 

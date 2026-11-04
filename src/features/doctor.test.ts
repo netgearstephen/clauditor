@@ -39,4 +39,12 @@ describe('scanCacheIssues', () => {
     expect(issues[0]).toMatchObject({ label: '-work-repo', severity: 'broken', turns: 10, cacheRatio: 0 })
     expect(issues[0].trend.length).toBeGreaterThan(0)
   })
+
+  it('reports a degraded session as well as a broken one', async () => {
+    const half = Array.from({ length: 10 }, () => ({ create: 50_000, read: 50_000 }))
+    writeFileSync(join(dir, '-work-repo', 'degraded.jsonl'), transcript(half))
+    const { sessions, issues } = await scanCacheIssues({ projectsDir: dir })
+    expect(sessions).toBe(3)
+    expect(issues.map((i) => i.severity).sort()).toEqual(['broken', 'degraded'])
+  })
 })
