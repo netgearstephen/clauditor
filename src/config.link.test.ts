@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,7 +14,8 @@ vi.mock('node:fs', async (original) => {
 const { writeConfigIfMissing } = await import('./config.js')
 
 describe('writeConfigIfMissing without hard links', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'clauditor-nolink-'))
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'clauditor-nolink-')) })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
   it('writes the seed directly and leaves no temp file', () => {

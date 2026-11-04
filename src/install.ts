@@ -144,8 +144,8 @@ export async function installHooks(claudeDir?: string): Promise<string[]> {
   const config = readConfig()
   const gate = resolveTrigger(null, config).gate
   const perModel = Object.entries(config.rotation.trigger.perModel)
-    .filter(([, o]) => typeof o?.peakContext === 'number')
-    .map(([model, o]) => `${model} ${(o.peakContext! / 1000).toFixed(0)}k`)
+    .filter(([, o]) => Number.isFinite(o?.peakContext))
+    .map(([model, o]) => `${model} ${Math.round(o.peakContext! / 1000)}k`)
   messages.push(
     `Session handoffs: ✓ enabled, banks one warm handoff per session once ` +
     `peak context reaches ${(gate / 1000).toFixed(0)}k` +

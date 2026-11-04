@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync, readdirSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { readConfig, writeConfigIfMissing, setProjectHubConfig } from './config.js'
+import { readConfig, writeConfigIfMissing, setProjectHubConfig, SEED_CONFIG } from './config.js'
+import { pricingKeyForModel } from './features/cost-tracker.js'
 
 // The sandbox home that vitest.setup.ts installed before any test module was
 // imported, which is also the home config.ts resolved its path against.
@@ -135,10 +136,24 @@ describe('writeConfigIfMissing', () => {
     expect(JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')).projects).toEqual({ 'github.com/a/b': hub })
   })
 
-  it('refuses to overwrite a config that does not parse', () => {
+  it('sets an unparseable config aside and still saves the login into a fresh seed', () => {
+    const broken = '{ "rotation": { "nudgeLead": 1, } }'
     mkdirSync(CONFIG_DIR, { recursive: true })
-    writeFileSync(CONFIG_FILE, '{ "rotation": { "nudgeLead": 1, } }')
-    expect(() => setProjectHubConfig('github.com/a/b', hub)).toThrow(/not valid JSON/)
-    expect(readFileSync(CONFIG_FILE, 'utf-8')).toBe('{ "rotation": { "nudgeLead": 1, } }')
+    writeFileSync(CONFIG_FILE, broken)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    setProjectHubConfig('github.com/a/b', hub)
+    const aside = readdirSync(CONFIG_DIR).filter((f) => f.startsWith('config.json.invalid-'))
+    expect(aside).toHaveLength(1)
+    expect(readFileSync(join(CONFIG_DIR, aside[0]), 'utf-8')).toBe(broken)
+    const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
+    expect(raw.rotation.nudgeLead).toBe(25_000)
+    expect(raw.projects['github.com/a/b']).toEqual(hub)
+    rmSync(join(CONFIG_DIR, aside[0]))
+  })
+
+  it('seeds per-model gates only under keys the pricing table resolves', () => {
+    for (const key of Object.keys(SEED_CONFIG.rotation.trigger.perModel ?? {})) {
+      expect(pricingKeyForModel(key)).toBe(key)
+    }
   })
 })

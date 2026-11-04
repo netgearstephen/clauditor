@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, renameSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -258,17 +258,21 @@ export function setProjectHubConfig(gitRemoteUrl: string, hubConfig: ProjectHubC
   // Seeded first, or a login before install would leave a file the seed never fills.
   writeConfigIfMissing()
   // The raw file, not readConfig(): merging first would freeze every default into it.
-  let raw: Partial<ClauditorUserConfig> = {}
-  if (existsSync(CONFIG_FILE)) {
-    try {
-      raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
-    } catch {
-      throw new Error(`${CONFIG_FILE} is not valid JSON; fix it and try again.`)
+  let raw: unknown = {}
+  try {
+    raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
+  } catch {
+    if (existsSync(CONFIG_FILE)) {
+      // Set aside, not overwritten or refused, so neither the hand edits nor this login is lost.
+      const aside = `${CONFIG_FILE}.invalid-${Date.now()}`
+      renameSync(CONFIG_FILE, aside)
+      console.warn(`${CONFIG_FILE} was not valid JSON, so it was moved to ${aside}.`)
+      if (writeConfigIfMissing()) raw = structuredClone(SEED_CONFIG)
     }
   }
-  if (!isObject(raw)) raw = {}
-  raw.projects = { ...(isObject(raw.projects) ? raw.projects : {}), [gitRemoteUrl]: hubConfig }
-  writeConfig(raw)
+  const config: Partial<ClauditorUserConfig> = isObject(raw) ? raw : {}
+  config.projects = { ...(isObject(config.projects) ? config.projects : {}), [gitRemoteUrl]: hubConfig }
+  writeConfig(config)
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
