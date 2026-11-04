@@ -23,6 +23,13 @@ describe('shouldNudgeRotation', () => {
     expect(shouldNudgeRotation({ context: 115_000, gate, growth, lead: 15_000, nudgedAt: 0, bankedPeak: 0 })).toBe(true)
   })
 
+  it('nudges again at the gate after an early nudge below it, then waits for growth', () => {
+    const lead = 25_000
+    expect(shouldNudgeRotation({ context: 129_999, gate, growth, lead, nudgedAt: 105_000, bankedPeak: 0 })).toBe(false)
+    expect(shouldNudgeRotation({ context: 131_000, gate, growth, lead, nudgedAt: 105_000, bankedPeak: 0 })).toBe(true)
+    expect(shouldNudgeRotation({ context: 140_000, gate, growth, lead, nudgedAt: 131_000, bankedPeak: 0 })).toBe(false)
+  })
+
   it('says close to the trigger below it and past it above', () => {
     expect(rotationNudgeMessage(116_000, gate)).toContain('close to the 130k')
     expect(rotationNudgeMessage(131_000, gate)).toContain('past the 130k')

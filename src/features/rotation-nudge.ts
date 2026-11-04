@@ -30,7 +30,9 @@ export function shouldNudgeRotation({
 }): boolean {
   if (context < gate - lead) return false
   if (bankedPeak > 0 && context < bankedPeak + growth) return false
-  if (nudgedAt > 0 && context < nudgedAt + growth) return false
+  // An early nudge spent below the gate must not silence the one at the gate.
+  const crossedSinceNudge = nudgedAt < gate && context >= gate
+  if (nudgedAt > 0 && context < nudgedAt + growth && !crossedSinceNudge) return false
   return true
 }
 

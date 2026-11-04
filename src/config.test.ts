@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { rmSync, mkdirSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
-import { readConfig } from './config.js'
+import { rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { readConfig, writeConfigIfMissing } from './config.js'
 
 // The sandbox home that vitest.setup.ts installed before any test module was
 // imported, which is also the home config.ts resolved its path against.
@@ -73,5 +73,40 @@ describe('readConfig', () => {
     expect(readConfig().compression.bash).toBe(true)
     write({ compression: { bash: false } })
     expect(readConfig().compression.bash).toBe(false)
+  })
+})
+
+describe('writeConfigIfMissing', () => {
+  afterEach(() => rmSync(CONFIG_FILE, { force: true }))
+
+  it('seeds a config that readConfig resolves to the tuned rotation', () => {
+    expect(writeConfigIfMissing()).toBe(true)
+    const c = readConfig()
+    expect(c.rotation.trigger.peakContext).toBe(130_000)
+    expect(c.rotation.trigger.perModel['claude-haiku-5'].peakContext).toBe(70_000)
+    expect(c.rotation.reBankGrowth).toBe(50_000)
+    expect(c.rotation.nudgeLead).toBe(25_000)
+    expect(c.rotation.blockAfterBank).toBe(true)
+    // Unseeded keys keep following the defaults instead of being frozen in.
+    expect(c.rotation.trigger.minRequestsSinceBank).toBe(20)
+    expect(JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')).pricing).toBeUndefined()
+  })
+
+  it('never overwrites an existing file', () => {
+    write({ rotation: { trigger: { peakContext: 200_000 } } })
+    const before = readFileSync(CONFIG_FILE, 'utf-8')
+    expect(writeConfigIfMissing()).toBe(false)
+    expect(readFileSync(CONFIG_FILE, 'utf-8')).toBe(before)
+  })
+
+  it('creates the directory when it is missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'clauditor-seed-'))
+    try {
+      const file = join(dir, 'nested', 'config.json')
+      expect(writeConfigIfMissing(file)).toBe(true)
+      expect(JSON.parse(readFileSync(file, 'utf-8')).rotation.nudgeLead).toBe(25_000)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

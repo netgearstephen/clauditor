@@ -139,31 +139,20 @@ The full design, with the measurements behind each threshold, is in [`docs/super
 
 ## Configuration
 
-One config file at `~/.clauditor/config.json`, created on `clauditor install`. It carries the deprecated `rotation.minPeakContext`, which a fresh install writes at the same value as `rotation.trigger.peakContext`:
+One config file at `~/.clauditor/config.json`. `clauditor install` writes it when it is absent, and so does an npm upgrade for anyone who already has the hooks; neither ever overwrites an existing file. It is seeded with only the rotation keys below, so every other setting follows the defaults in the table. The seed sets a 130k gate, 70k for Haiku 5, and a 25k nudge lead, tighter than the defaults:
 
 ```json
 {
   "rotation": {
-    "enabled": true,
-    "minPeakContext": 150000,
     "trigger": {
-      "peakContext": 150000,
-      "buffer": 0,
-      "minRequestsSinceBank": 20,
-      "perModel": {}
+      "peakContext": 130000,
+      "perModel": {
+        "claude-haiku-5": { "peakContext": 70000 }
+      }
     },
     "reBankGrowth": 50000,
+    "nudgeLead": 25000,
     "blockAfterBank": true
-  },
-  "pricing": {
-    "discount": 0,
-    "perModel": {}
-  },
-  "notifications": {
-    "desktop": true
-  },
-  "compression": {
-    "bash": true
   }
 }
 ```
@@ -177,6 +166,7 @@ One config file at `~/.clauditor/config.json`, created on `clauditor install`. I
 | `rotation.trigger.costHorizonRequests` | `0` | Cost-effectiveness gate on the bank. When above 0, a bank at the gate is deferred (and re-checked at the next Stop) unless rotating repays its cost, the bank turn plus the cold entry write, within this many requests. Opus 5 breaks even after about 13 requests at 150k, Fable 5.1 about 48. 0 disables it |
 | `rotation.trigger.perModel` | `{}` | Per-field overrides keyed by model prefix, e.g. `{ "claude-haiku-4-5": { "peakContext": 120000 } }`. Use the base key: a suffixed or dated form such as `claude-opus-5[1m]` will not match |
 | `rotation.minPeakContext` | `150000` | Deprecated alias for `rotation.trigger.peakContext`. See below |
+| `rotation.nudgeLead` | `15000` | How far below the gate the mid-turn rotation nudge fires, so a long turn ends near the gate rather than past it |
 | `rotation.reBankGrowth` | `50000` | Peak-context growth since the last bank that earns a rewrite. Refreshes 65% of banking sessions, against 34% at 100k |
 | `rotation.blockAfterBank` | `true` | Enforce the wind-down guard after a bank |
 | `compression.bash` | `true` | Compress verbose Bash output in `PostToolUse`. Set `false` when another tool, such as RTK, already condenses it |
@@ -237,10 +227,9 @@ peak never reaches it and banking goes quiet. Where the window is known, the
 gate is clamped to nine tenths of it and says so once.
 
 `rotation.minPeakContext` still works as an alias for `trigger.peakContext`,
-but `trigger.peakContext` wins if both are set. This matters because a fresh
-`clauditor install` writes both keys to the same value: hand-editing the
-deprecated `minPeakContext` afterwards is then a silent no-op, since the
-resolved gate keeps coming from `trigger.peakContext` regardless. Set
+but `trigger.peakContext` wins if both are set. The seeded file sets
+`trigger.peakContext`, as did the full file older installs wrote, so adding or
+editing the deprecated `minPeakContext` there is a silent no-op. Set
 `rotation.trigger.peakContext` for a gate that actually moves.
 
 The idle timer's 55-minute delay and 65k arming floor are constants, not config: they are derived from the cache TTL and the measured entry cost of a handoff, and there is nothing to tune until that research changes.
@@ -276,7 +265,7 @@ Shows each open session's peak context against the banking gate, and whether its
 | Command | Description |
 |---|---|
 | `clauditor` | Quota report (default) |
-| `clauditor install` | Register hooks into Claude Code, write default config, install the `/save-skill` skill |
+| `clauditor install` | Register hooks into Claude Code, seed the config if it is absent, install the `/save-skill` skill |
 | `clauditor uninstall` | Remove hooks |
 | `clauditor watch` | Live dashboard: peak context vs the banking gate |
 | `clauditor report` | Per-session token report with cost-weighted growth bars |
